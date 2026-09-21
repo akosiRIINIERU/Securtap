@@ -66,13 +66,15 @@ export default function App() {
 
 const styles = StyleSheet.create({
   tabBar: {
-    backgroundColor: '#d9d9d9',
-    borderRadius: 30,
-    marginHorizontal: 16,
-    marginBottom: 16,
-    height: 60,
-    position: 'absolute',
-    borderTopWidth: 0,
-    elevation: 0,
-  },
+  backgroundColor: '#eeeeee',
+  borderRadius: 30,
+  marginHorizontal: 12,
+  marginBottom: 12,
+  height: 60,
+  position: 'absolute',
+  borderTopWidth: 0,
+  elevation: 3,
+  paddingTop: 5,
+  paddingBottom: 5,
+},
 });
