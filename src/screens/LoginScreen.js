@@ -12,7 +12,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { supabase, getSupabaseErrorMessage } from '../lib/supabase';
 
-export default function LoginScreen({ onLoginSuccess }) {
+
+export default function LoginScreen({
+  onLoginSuccess,
+  onSignUp,
+}) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
@@ -183,6 +187,20 @@ export default function LoginScreen({ onLoginSuccess }) {
     </SafeAreaView>
   );
 }
+        <View style={styles.signupRow}>
+  <Text style={styles.signupLabel}>
+    Don't have an account?
+  </Text>
+
+  <TouchableOpacity
+    onPress={onSignUp}
+    disabled={loading || forgotLoading}
+  >
+    <Text style={styles.signupLink}>
+      Sign Up
+    </Text>
+  </TouchableOpacity>
+</View>
 
 const styles = StyleSheet.create({
   container: {
@@ -302,4 +320,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
+
+  signupRow: {
+  flexDirection: 'row',
+  justifyContent: 'center',
+  alignItems: 'center',
+  marginTop: 10,
+},
+
+signupLabel: {
+  color: '#666666',
+  fontSize: 13,
+},
+
+signupLink: {
+  color: '#111111',
+  fontSize: 13,
+  fontWeight: '800',
+  marginLeft: 5,
+},
+
 });
+

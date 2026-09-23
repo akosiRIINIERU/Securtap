@@ -13,6 +13,7 @@ import GuestsScreen from './src/screens/GuestsScreen';
 import LockManagementScreen from './src/screens/LockManagementScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import NetworkStatus from './src/components/NetworkStatus';
+import SignUpScreen from './src/screens/SignUpScreen';
 
 import { supabase } from './src/lib/supabase';
 
@@ -95,6 +96,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+  const [showSignUp, setShowSignUp] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -196,20 +198,25 @@ export default function App() {
 
       <NavigationContainer>
         {isPasswordRecovery ? (
-          <ResetPasswordScreen
-            onPasswordUpdated={handlePasswordUpdated}
-          />
-        ) : session ? (
-          <MainAppTabs
-            onLogout={handleLogout}
-          />
-        ) : (
-          <LoginScreen
-            onLoginSuccess={(newSession) => {
-              setSession(newSession);
-            }}
-          />
-        )}
+  <ResetPasswordScreen
+    onPasswordUpdated={handlePasswordUpdated}
+  />
+) : session ? (
+  <MainAppTabs
+    onLogout={handleLogout}
+  />
+) : showSignUp ? (
+  <SignUpScreen
+    onBackToLogin={() => setShowSignUp(false)}
+  />
+) : (
+  <LoginScreen
+    onLoginSuccess={(newSession) => {
+      setSession(newSession);
+    }}
+    onSignUp={() => setShowSignUp(true)}
+  />
+)}
       </NavigationContainer>
     </>
   );
