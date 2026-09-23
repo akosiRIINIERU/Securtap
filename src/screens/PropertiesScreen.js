@@ -1,119 +1,76 @@
 import React, { useCallback, useEffect, useState } from 'react';
-
 import {
-  ActivityIndicator,
-  Alert,
-  RefreshControl,
-  SafeAreaView,
-  ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
+  SafeAreaView,
+  TouchableOpacity,
+  TextInput,
+  Alert,
+  ActivityIndicator,
+  ScrollView,
 } from 'react-native';
-
 import { Ionicons } from '@expo/vector-icons';
 
-import {
-  supabase,
-  getSupabaseErrorMessage,
-} from '../lib/supabase';
+import { supabase, getSupabaseErrorMessage } from '../lib/supabase';
+import { useTheme } from '../context/ThemeContext';
 
-export default function DashboardScreen() {
+export default function PropertiesScreen({ navigation }) {
+  const { colors } = useTheme();
+
   const [properties, setProperties] = useState([]);
-  const [units, setUnits] = useState([]);
-  const [locks, setLocks] = useState([]);
-  const [activities, setActivities] = useState([]);
-  const [guests, setGuests] = useState([]);
-
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(false);
 
-  const loadDashboardData = useCallback(async () => {
+  const [name, setName] = useState('');
+  const [address, setAddress] = useState('');
+
+  const loadProperties = useCallback(async () => {
     try {
-      const [
-        propertiesResult,
-        unitsResult,
-        locksResult,
-        activitiesResult,
-        guestsResult,
-      ] = await Promise.all([
-        supabase
-          .from('properties')
-          .select('*'),
+      setLoading(true);
 
-        supabase
-          .from('property_units')
-          .select('*'),
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
 
-        supabase
-          .from('smart_locks')
-          .select('*'),
-
-        supabase
-          .from('activity_logs')
-          .select('*')
-          .order('created_at', {
-            ascending: false,
-          })
-          .limit(5),
-
-        supabase
-          .from('guests')
-          .select('*'),
-      ]);
-
-      if (propertiesResult.error) {
-        throw propertiesResult.error;
+      if (!user) {
+        setProperties([]);
+        return;
       }
 
-      if (unitsResult.error) {
-        throw unitsResult.error;
+      const { data, error } = await supabase
+        .from('properties')
+        .select('*')
+        .eq('admin_id', user.id)
+        .order('created_at', {
+          ascending: false,
+        });
+
+      if (error) {
+        throw error;
       }
 
-      if (locksResult.error) {
-        throw locksResult.error;
-      }
-
-      if (activitiesResult.error) {
-        throw activitiesResult.error;
-      }
-
-      if (guestsResult.error) {
-        throw guestsResult.error;
-      }
-
-      setProperties(propertiesResult.data || []);
-      setUnits(unitsResult.data || []);
-      setLocks(locksResult.data || []);
-      setActivities(activitiesResult.data || []);
-      setGuests(guestsResult.data || []);
-
+      setProperties(data || []);
     } catch (error) {
-      console.error('Dashboard loading error:', error);
+      console.error('Load properties error:', error);
 
       Alert.alert(
-        'Dashboard Error',
+        'Unable to Load Properties',
         getSupabaseErrorMessage(error)
       );
+    } finally {
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    const initialize = async () => {
-      setLoading(true);
+    loadProperties();
 
-      try {
-        await loadDashboardData();
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    initialize();
-
+    // IMPORTANT:
+    // .on() MUST come before .subscribe()
     const channel = supabase
-      .channel('dashboard-realtime')
+      .channel('properties-realtime')
       .on(
         'postgres_changes',
         {
@@ -121,42 +78,22 @@ export default function DashboardScreen() {
           schema: 'public',
           table: 'properties',
         },
-        loadDashboardData
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'property_units',
-        },
-        loadDashboardData
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'smart_locks',
-        },
-        loadDashboardData
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'activity_logs',
-        },
-        loadDashboardData
+        () => {
+          loadProperties();
+        }
       )
       .subscribe((status, error) => {
+        console.log(
+          'Properties realtime status:',
+          status
+        );
+
         if (
           status === 'CHANNEL_ERROR' ||
           status === 'TIMED_OUT'
         ) {
           console.error(
-            'Dashboard realtime error:',
+            'Properties realtime error:',
             error
           );
         }
@@ -165,249 +102,298 @@ export default function DashboardScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [loadDashboardData]);
+  }, [loadProperties]);
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
+  const handleAddProperty = async () => {
+    const cleanName = name.trim();
+    const cleanAddress = address.trim();
+
+    if (!cleanName) {
+      Alert.alert(
+        'Missing Property Name',
+        'Please enter a property name.'
+      );
+      return;
+    }
 
     try {
-      await loadDashboardData();
+      setAdding(true);
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        Alert.alert(
+          'Session Expired',
+          'Please log in again.'
+        );
+        return;
+      }
+
+      const { error } = await supabase
+        .from('properties')
+        .insert({
+          name: cleanName,
+          address: cleanAddress || null,
+          admin_id: user.id,
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      setName('');
+      setAddress('');
+      setShowAddForm(false);
+
+      await loadProperties();
+
+      Alert.alert(
+        'Property Added',
+        `${cleanName} has been added successfully.`
+      );
+    } catch (error) {
+      console.error('Add property error:', error);
+
+      Alert.alert(
+        'Unable to Add Property',
+        getSupabaseErrorMessage(error)
+      );
     } finally {
-      setRefreshing(false);
+      setAdding(false);
     }
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#111" />
-        <Text style={styles.loadingText}>
-          Loading dashboard...
-        </Text>
-      </SafeAreaView>
-    );
-  }
-
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView
+      style={[
+        styles.container,
+        { backgroundColor: colors.background },
+      ]}
+    >
       <ScrollView
+        contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-          />
-        }
-        contentContainerStyle={styles.scrollContent}
       >
+        <Text
+          style={[
+            styles.brandTitle,
+            { color: colors.text },
+          ]}
+        >
+          SECURTAP
+        </Text>
 
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.brandTitle}>
-              SECURTAP
-            </Text>
+        <Text
+          style={[
+            styles.welcomeSub,
+            { color: colors.secondaryText },
+          ]}
+        >
+          Your Properties
+        </Text>
 
-            <Text style={styles.welcomeSub}>
-              Welcome, Admin!
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={styles.notificationButton}
+        {showAddForm && (
+          <View
+            style={[
+              styles.formCard,
+              { backgroundColor: colors.card },
+            ]}
           >
-            <Ionicons
-              name="notifications-outline"
-              size={24}
-              color="#111"
+            <View style={styles.formHeader}>
+              <Text
+                style={[
+                  styles.cardHeader,
+                  { color: colors.text },
+                ]}
+              >
+                Add Property
+              </Text>
+
+              <TouchableOpacity
+                onPress={() => setShowAddForm(false)}
+              >
+                <Ionicons
+                  name="close"
+                  size={24}
+                  color={colors.text}
+                />
+              </TouchableOpacity>
+            </View>
+
+            <Text
+              style={[
+                styles.label,
+                { color: colors.text },
+              ]}
+            >
+              Property Name
+            </Text>
+
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.input,
+                  color: colors.text,
+                  borderColor: colors.border,
+                },
+              ]}
+              placeholder="e.g. Airbnb 1"
+              placeholderTextColor={colors.secondaryText}
+              value={name}
+              onChangeText={setName}
             />
 
-            <View style={styles.notificationDot} />
+            <Text
+              style={[
+                styles.label,
+                { color: colors.text },
+              ]}
+            >
+              Address
+            </Text>
+
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.input,
+                  color: colors.text,
+                  borderColor: colors.border,
+                },
+              ]}
+              placeholder="Property address"
+              placeholderTextColor={colors.secondaryText}
+              value={address}
+              onChangeText={setAddress}
+            />
+
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={handleAddProperty}
+              disabled={adding}
+            >
+              {adding ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.primaryButtonText}>
+                  Add Property
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {!showAddForm && (
+          <TouchableOpacity
+            style={styles.addButton}
+            onPress={() => setShowAddForm(true)}
+          >
+            <Ionicons
+              name="add"
+              size={20}
+              color="#fff"
+            />
+
+            <Text style={styles.addButtonText}>
+              Add Property
+            </Text>
           </TouchableOpacity>
-        </View>
+        )}
 
-        <Text style={styles.dateText}>
-          {new Date().toLocaleDateString()}
-        </Text>
+        {loading ? (
+          <ActivityIndicator
+            size="large"
+            color={colors.text}
+            style={styles.loader}
+          />
+        ) : properties.length === 0 ? (
+          <View
+            style={[
+              styles.emptyCard,
+              { backgroundColor: colors.card },
+            ]}
+          >
+            <Ionicons
+              name="business-outline"
+              size={42}
+              color={colors.secondaryText}
+            />
 
-        <View style={styles.metricsRow}>
-
-          <View style={styles.metricCard}>
-            <View style={styles.iconCircle}>
-              <Ionicons
-                name="business-outline"
-                size={21}
-                color="#111"
-              />
-            </View>
-
-            <Text style={styles.metricNumber}>
-              {properties.length}
+            <Text
+              style={[
+                styles.emptyTitle,
+                { color: colors.text },
+              ]}
+            >
+              No Properties
             </Text>
 
-            <Text style={styles.metricLabel}>
-              Properties
-            </Text>
-          </View>
-
-          <View style={styles.metricCard}>
-            <View style={styles.iconCircle}>
-              <Ionicons
-                name="home-outline"
-                size={21}
-                color="#111"
-              />
-            </View>
-
-            <Text style={styles.metricNumber}>
-              {units.length}
-            </Text>
-
-            <Text style={styles.metricLabel}>
-              Active Units
+            <Text
+              style={[
+                styles.emptyText,
+                { color: colors.secondaryText },
+              ]}
+            >
+              Add your first property to start
+              managing smart locks.
             </Text>
           </View>
-
-          <View style={styles.metricCard}>
-            <View style={styles.iconCircle}>
-              <Ionicons
-                name="lock-closed-outline"
-                size={21}
-                color="#111"
-              />
-            </View>
-
-            <Text style={styles.metricNumber}>
-              {
-                locks.filter(
-                  (lock) =>
-                    lock.status === 'locked'
-                ).length
-              }
-            </Text>
-
-            <Text style={styles.metricLabel}>
-              Locked
-            </Text>
-          </View>
-
-        </View>
-
-        <View style={styles.section}>
-
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>
-              Recent Activities
-            </Text>
-
-            <TouchableOpacity>
-              <Text style={styles.viewAll}>
-                View All
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {activities.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyText}>
-                No recent activities.
-              </Text>
-            </View>
-          ) : (
-            activities.map((activity) => (
-              <View
-                key={activity.id}
-                style={styles.activityCard}
-              >
-                <View style={styles.activityIcon}>
-                  <Ionicons
-                    name="time-outline"
-                    size={20}
-                    color="#111"
-                  />
-                </View>
-
-                <View style={styles.activityInfo}>
-                  <Text style={styles.activityTitle}>
-                    {activity.action ||
-                      'Activity'}
-                  </Text>
-
-                  <Text
-                    style={
-                      styles.activityDescription
-                    }
-                  >
-                    {activity.description ||
-                      'Recent system activity'}
-                  </Text>
-                </View>
-              </View>
-            ))
-          )}
-
-        </View>
-
-        <View style={styles.section}>
-
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>
-              Upcoming Check-ins
-            </Text>
-
-            <TouchableOpacity>
-              <Text style={styles.viewAll}>
-                View All
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {guests.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyText}>
-                No upcoming guests.
-              </Text>
-            </View>
-          ) : (
-            guests.slice(0, 5).map((guest) => (
-              <View
-                key={guest.id}
-                style={styles.checkInCard}
-              >
-                <View style={styles.guestAvatar}>
-                  <Ionicons
-                    name="person-outline"
-                    size={22}
-                    color="#111"
-                  />
-                </View>
-
-                <View style={styles.guestInfo}>
-                  <Text style={styles.guestName}>
-                    {guest.name || 'Guest'}
-                  </Text>
-
-                  <Text style={styles.guestProperty}>
-                    {guest.property_id ||
-                      'Property'}
-                  </Text>
-
-                  <Text style={styles.guestDate}>
-                    Check-in:{' '}
-                    {guest.check_in || 'Not set'}
-                  </Text>
-                </View>
-
+        ) : (
+          properties.map((property) => (
+            <TouchableOpacity
+              key={property.id}
+              style={[
+                styles.propertyCard,
+                { backgroundColor: colors.card },
+              ]}
+              onPress={() => {
+                Alert.alert(
+                  property.name,
+                  property.address ||
+                    'No address provided.'
+                );
+              }}
+            >
+              <View style={styles.propertyIcon}>
                 <Ionicons
-                  name="chevron-forward"
-                  size={20}
-                  color="#777"
+                  name="business-outline"
+                  size={24}
+                  color="#111"
                 />
               </View>
-            ))
-          )}
 
-        </View>
+              <View style={styles.propertyInfo}>
+                <Text
+                  style={[
+                    styles.propertyName,
+                    { color: colors.text },
+                  ]}
+                >
+                  {property.name}
+                </Text>
 
+                <Text
+                  style={[
+                    styles.propertyAddress,
+                    { color: colors.secondaryText },
+                  ]}
+                >
+                  {property.address ||
+                    'No address provided'}
+                </Text>
+              </View>
+
+              <Ionicons
+                name="chevron-forward"
+                size={20}
+                color={colors.secondaryText}
+              />
+            </TouchableOpacity>
+          ))
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -416,211 +402,140 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
   },
 
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  loadingText: {
-    marginTop: 12,
-    color: '#666',
-  },
-
-  scrollContent: {
+  content: {
     padding: 20,
     paddingBottom: 100,
   },
 
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-
   brandTitle: {
-    fontSize: 25,
+    fontSize: 22,
     fontWeight: '800',
-    color: '#111',
+    letterSpacing: 2,
   },
 
   welcomeSub: {
     fontSize: 14,
-    color: '#777',
-    marginTop: 3,
+    marginTop: 4,
+    marginBottom: 18,
   },
 
-  notificationButton: {
-    width: 45,
-    height: 45,
+  addButton: {
+    height: 48,
     borderRadius: 14,
-    backgroundColor: '#f3f3f3',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  notificationDot: {
-    position: 'absolute',
-    right: 10,
-    top: 9,
-    width: 7,
-    height: 7,
-    borderRadius: 5,
     backgroundColor: '#111',
-  },
-
-  dateText: {
-    color: '#777',
-    marginTop: 15,
-  },
-
-  metricsRow: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
   },
 
-  metricCard: {
-    flex: 1,
-    backgroundColor: '#f4f4f4',
+  addButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    marginLeft: 7,
+  },
+
+  formCard: {
     borderRadius: 18,
-    padding: 15,
+    padding: 18,
+    marginBottom: 16,
   },
 
-  iconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#fff',
+  formHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 18,
+  },
+
+  cardHeader: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+
+  label: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 7,
+  },
+
+  input: {
+    height: 50,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    marginBottom: 14,
+  },
+
+  primaryButton: {
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: '#111',
     justifyContent: 'center',
     alignItems: 'center',
   },
 
-  metricNumber: {
-    fontSize: 25,
-    fontWeight: '800',
-    color: '#111',
-    marginTop: 12,
+  primaryButtonText: {
+    color: '#fff',
+    fontWeight: '700',
   },
 
-  metricLabel: {
-    fontSize: 12,
-    color: '#777',
-    marginTop: 3,
-  },
-
-  section: {
-    marginTop: 28,
-  },
-
-  sectionHeader: {
+  propertyCard: {
+    minHeight: 78,
+    borderRadius: 18,
+    padding: 14,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
   },
 
-  sectionTitle: {
-    fontSize: 19,
-    fontWeight: '800',
-    color: '#111',
-  },
-
-  viewAll: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#555',
-  },
-
-  activityCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f4f4f4',
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 10,
-  },
-
-  activityIcon: {
-    width: 42,
-    height: 42,
+  propertyIcon: {
+    width: 48,
+    height: 48,
     borderRadius: 14,
-    backgroundColor: '#fff',
+    backgroundColor: '#e8e8e8',
     justifyContent: 'center',
     alignItems: 'center',
   },
 
-  activityInfo: {
+  propertyInfo: {
     flex: 1,
     marginLeft: 12,
   },
 
-  activityTitle: {
+  propertyName: {
     fontSize: 15,
-    fontWeight: '700',
-    color: '#111',
+    fontWeight: '800',
   },
 
-  activityDescription: {
+  propertyAddress: {
     fontSize: 12,
-    color: '#777',
-    marginTop: 3,
-  },
-
-  checkInCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f4f4f4',
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 10,
-  },
-
-  guestAvatar: {
-    width: 45,
-    height: 45,
-    borderRadius: 15,
-    backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  guestInfo: {
-    flex: 1,
-    marginLeft: 12,
-  },
-
-  guestName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#111',
-  },
-
-  guestProperty: {
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 3,
-    color: '#555',
-  },
-
-  guestDate: {
-    fontSize: 12,
-    color: '#777',
-    marginTop: 3,
+    marginTop: 4,
   },
 
   emptyCard: {
-    backgroundColor: '#f4f4f4',
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: 18,
+    padding: 30,
     alignItems: 'center',
+    marginTop: 20,
+  },
+
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 12,
   },
 
   emptyText: {
-    color: '#777',
+    textAlign: 'center',
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 6,
+  },
+
+  loader: {
+    marginTop: 40,
   },
 });

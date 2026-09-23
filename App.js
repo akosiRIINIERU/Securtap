@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View, ActivityIndicator } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,6 +15,7 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import NetworkStatus from './src/components/NetworkStatus';
 import SignUpScreen from './src/screens/SignUpScreen';
 
+import { ThemeProvider } from './src/context/ThemeContext';
 import { supabase } from './src/lib/supabase';
 
 const Tab = createBottomTabNavigator();
@@ -98,17 +99,36 @@ export default function App() {
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   const [showSignUp, setShowSignUp] = useState(false);
 
+  /*
+   * -----------------------------------------
+   * SUPABASE AUTH INITIALIZATION
+   * -----------------------------------------
+   */
   useEffect(() => {
     let mounted = true;
 
     const initializeAuth = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      try {
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
 
-      if (mounted) {
-        setSession(session);
-        setLoading(false);
+        if (error) {
+          console.error('Supabase getSession error:', error);
+        }
+
+        if (mounted) {
+          setSession(session);
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error('Auth initialization error:', error);
+
+        if (mounted) {
+          setSession(null);
+          setLoading(false);
+        }
       }
     };
 
@@ -117,20 +137,32 @@ export default function App() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(
-      (event, session) => {
+      (event, newSession) => {
         console.log('Supabase Auth Event:', event);
+
+        if (!mounted) {
+          return;
+        }
 
         if (event === 'PASSWORD_RECOVERY') {
           setIsPasswordRecovery(true);
+          setSession(newSession);
+          return;
         }
 
-        if (event === 'SIGNED_IN') {
-          setSession(session);
+        if (
+          event === 'SIGNED_IN' ||
+          event === 'TOKEN_REFRESHED' ||
+          event === 'INITIAL_SESSION'
+        ) {
+          setSession(newSession);
+          return;
         }
 
         if (event === 'SIGNED_OUT') {
           setSession(null);
           setIsPasswordRecovery(false);
+          setShowSignUp(false);
         }
       }
     );
@@ -141,6 +173,11 @@ export default function App() {
     };
   }, []);
 
+  /*
+   * -----------------------------------------
+   * PASSWORD RESET DEEP LINK
+   * -----------------------------------------
+   */
   useEffect(() => {
     const handleDeepLink = async (url) => {
       if (!url) {
@@ -155,10 +192,14 @@ export default function App() {
     };
 
     const checkInitialUrl = async () => {
-      const initialUrl = await Linking.getInitialURL();
+      try {
+        const initialUrl = await Linking.getInitialURL();
 
-      if (initialUrl) {
-        await handleDeepLink(initialUrl);
+        if (initialUrl) {
+          await handleDeepLink(initialUrl);
+        }
+      } catch (error) {
+        console.error('Initial deep link error:', error);
       }
     };
 
@@ -176,50 +217,98 @@ export default function App() {
     };
   }, []);
 
+  /*
+   * -----------------------------------------
+   * AFTER PASSWORD RESET
+   * -----------------------------------------
+   */
   const handlePasswordUpdated = async () => {
     setIsPasswordRecovery(false);
 
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error('Sign out after password reset failed:', error);
+    }
 
     setSession(null);
   };
 
+  /*
+   * -----------------------------------------
+   * LOGOUT
+   * -----------------------------------------
+   */
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    try {
+      const { error } = await supabase.auth.signOut();
+
+      if (error) {
+        console.error('Logout error:', error);
+      }
+    } catch (error) {
+      console.error('Logout failed:', error);
+    }
   };
 
+  /*
+   * -----------------------------------------
+   * LOADING
+   * -----------------------------------------
+   */
   if (loading) {
-    return null;
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator
+          size="large"
+          color="#111111"
+        />
+      </View>
+    );
   }
 
+  /*
+   * -----------------------------------------
+   * APP
+   * -----------------------------------------
+   */
   return (
-    <>
+    <ThemeProvider>
       <NetworkStatus />
 
       <NavigationContainer>
         {isPasswordRecovery ? (
-  <ResetPasswordScreen
-    onPasswordUpdated={handlePasswordUpdated}
-  />
-) : session ? (
-  <MainAppTabs
-    onLogout={handleLogout}
-  />
-) : showSignUp ? (
-  <SignUpScreen
-    onBackToLogin={() => setShowSignUp(false)}
-  />
-) : (
-  <LoginScreen
-  onLoginSuccess={(newSession) => {
-    setSession(newSession);
-  }}
-  onSignUp={() => setShowSignUp(true)}
-/>
-)}
+          <ResetPasswordScreen
+            onPasswordUpdated={handlePasswordUpdated}
+          />
+        ) : session ? (
+          <MainAppTabs
+            onLogout={handleLogout}
+          />
+        ) : showSignUp ? (
+          <SignUpScreen
+            onBackToLogin={() => setShowSignUp(false)}
+          />
+        ) : (
+          <LoginScreen
+            onLoginSuccess={(newSession) => {
+              setSession(newSession);
+            }}
+            onSignUp={() => {
+              setShowSignUp(true);
+            }}
+          />
+        )}
       </NavigationContainer>
-    </>
+    </ThemeProvider>
   );
 }
 
-const styles = StyleSheet.create({});
+const styles = StyleSheet.create({
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+  },
+});
