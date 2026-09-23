@@ -1,250 +1,303 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   SafeAreaView,
-  ScrollView,
-  TouchableOpacity,
   TextInput,
+  TouchableOpacity,
+  ScrollView,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '../lib/supabase';
 
 export default function LockManagementScreen() {
-  const [passcode, setPasscode] = useState('');
+  const [locks, setLocks] = useState([]);
+  const [passcodes, setPasscodes] = useState({});
+  const [visiblePasscodes, setVisiblePasscodes] = useState({});
+  const [loading, setLoading] = useState(true);
 
-  const handleUnlock = () => {
-    Alert.alert(
-      'Smart Lock',
-      'Tuya unlock command will be connected here.'
-    );
+  const loadLocks = async () => {
+    try {
+      const { data: locksData, error: locksError } =
+        await supabase
+          .from('smart_locks')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+      if (locksError) {
+        console.log(locksError);
+        return;
+      }
+
+      setLocks(locksData || []);
+
+      if (!locksData?.length) {
+        setLoading(false);
+        return;
+      }
+
+      const lockIds = locksData.map(
+        lock => lock.lock_id
+      );
+
+      const { data: passcodeData, error: passcodeError } =
+        await supabase
+          .from('lock_passcodes')
+          .select('*')
+          .in('lock_id', lockIds)
+          .eq('is_active', true);
+
+      if (passcodeError) {
+        console.log(passcodeError);
+        return;
+      }
+
+      const passcodeMap = {};
+
+      (passcodeData || []).forEach(item => {
+        passcodeMap[item.lock_id] = item;
+      });
+
+      setPasscodes(passcodeMap);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleLock = () => {
+  useEffect(() => {
+    loadLocks();
+
+    const channel = supabase
+      .channel('locks-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'smart_locks',
+        },
+        loadLocks
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'lock_passcodes',
+        },
+        loadLocks
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const togglePasscode = lockId => {
+    setVisiblePasscodes(previous => ({
+      ...previous,
+      [lockId]: !previous[lockId],
+    }));
+  };
+
+  const resetPasscode = async lockId => {
     Alert.alert(
-      'Smart Lock',
-      'Tuya lock command will be connected here.'
+      'Reset Passcode',
+      'Are you sure you want to deactivate this passcode?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await supabase
+              .from('lock_passcodes')
+              .update({
+                is_active: false,
+              })
+              .eq('lock_id', lockId)
+              .eq('is_active', true);
+
+            if (error) {
+              Alert.alert('Error', error.message);
+              return;
+            }
+
+            loadLocks();
+          },
+        },
+      ]
     );
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
-        showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
       >
-        {/* HEADER */}
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.brandTitle}>SECURTAP</Text>
-            <Text style={styles.welcomeSub}>Lock Management</Text>
-          </View>
+        <Text style={styles.brandTitle}>SECURTAP</Text>
+        <Text style={styles.welcomeSub}>
+          Lock Management
+        </Text>
 
-          <View style={styles.onlineBadge}>
-            <View style={styles.onlineDot} />
-
-            <Text style={styles.onlineText}>ONLINE</Text>
-          </View>
-        </View>
-
-        {/* LOCK CARD */}
-        <View style={styles.lockCard}>
-          <View style={styles.lockHeader}>
-            <View>
-              <Text style={styles.lockName}>
-                AIRBNB 1 Smart Lock
-              </Text>
-
-              <Text style={styles.lockSubtext}>
-                Tuya Smart Lock
-              </Text>
-            </View>
-
-            <View style={styles.lockIcon}>
-              <Ionicons
-                name="lock-closed"
-                size={25}
-                color="#111"
-              />
-            </View>
-          </View>
-
-          {/* LOCK STATUS */}
-          <View style={styles.lockStatus}>
+        {loading ? (
+          <ActivityIndicator
+            size="large"
+            color="#000"
+            style={{ marginTop: 30 }}
+          />
+        ) : locks.length === 0 ? (
+          <View style={styles.emptyCard}>
             <Ionicons
               name="lock-closed-outline"
-              size={45}
-              color="#111"
+              size={42}
+              color="#777"
             />
 
-            <Text style={styles.lockedText}>LOCKED</Text>
-
-            <Text style={styles.lastUpdated}>
-              Last updated: June xx, xxxx
-            </Text>
-          </View>
-
-          {/* CONTROLS */}
-          <View style={styles.controlRow}>
-            <TouchableOpacity
-              style={styles.unlockButton}
-              onPress={handleUnlock}
-            >
-              <Ionicons
-                name="lock-open-outline"
-                size={19}
-                color="#fff"
-              />
-
-              <Text style={styles.unlockText}>Unlock</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.lockButton}
-              onPress={handleLock}
-            >
-              <Ionicons
-                name="lock-closed-outline"
-                size={19}
-                color="#111"
-              />
-
-              <Text style={styles.lockText}>Lock</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* ACCESS CREDENTIALS */}
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>
-            Access Credentials
-          </Text>
-
-          {/* PASSCODE */}
-          <Text style={styles.fieldLabel}>Passcode</Text>
-
-          <View style={styles.passcodeRow}>
-            <TextInput
-              style={styles.passcodeInput}
-              value={passcode}
-              onChangeText={setPasscode}
-              placeholder="Enter passcode"
-              placeholderTextColor="#999"
-              secureTextEntry
-              keyboardType="numeric"
-            />
-
-            <TouchableOpacity>
-              <Text style={styles.resetText}>Reset</Text>
-            </TouchableOpacity>
-          </View>
-
-          <Text style={styles.updatedText}>
-            Last Updated: June xx, xxxx
-          </Text>
-
-          {/* NFC */}
-          <View style={styles.credentialRow}>
-            <View style={styles.credentialIcon}>
-              <Ionicons
-                name="card-outline"
-                size={21}
-                color="#111"
-              />
-            </View>
-
-            <View style={styles.credentialInfo}>
-              <Text style={styles.credentialTitle}>NFC</Text>
-
-              <Text style={styles.credentialSubtext}>
-                Registered Cards: 2
-              </Text>
-            </View>
-
-            <TouchableOpacity style={styles.manageButton}>
-              <Text style={styles.manageText}>Manage</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* FINGERPRINT */}
-          <View style={styles.credentialRow}>
-            <View style={styles.credentialIcon}>
-              <Ionicons
-                name="finger-print-outline"
-                size={22}
-                color="#111"
-              />
-            </View>
-
-            <View style={styles.credentialInfo}>
-              <Text style={styles.credentialTitle}>
-                Fingerprint
-              </Text>
-
-              <Text style={styles.credentialSubtext}>
-                Registered Fingerprints: 2
-              </Text>
-            </View>
-
-            <TouchableOpacity style={styles.manageButton}>
-              <Text style={styles.manageText}>Manage</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* ACTIVITY */}
-        <View style={styles.sectionCard}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>
-              Lock Activity
+            <Text style={styles.emptyTitle}>
+              No Smart Locks
             </Text>
 
-            <TouchableOpacity>
-              <Text style={styles.viewAll}>View All</Text>
-            </TouchableOpacity>
+            <Text style={styles.emptyText}>
+              No smart locks have been registered yet.
+            </Text>
           </View>
+        ) : (
+          locks.map(lock => {
+            const passcode = passcodes[lock.lock_id];
 
-          <View style={styles.activityRow}>
-            <Ionicons
-              name="finger-print-outline"
-              size={20}
-              color="#111"
-            />
+            return (
+              <View
+                key={lock.lock_id}
+                style={styles.mainCard}
+              >
+                <View style={styles.lockHeader}>
+                  <View style={styles.lockIcon}>
+                    <Ionicons
+                      name="lock-closed-outline"
+                      size={24}
+                      color="#111"
+                    />
+                  </View>
 
-            <View style={styles.activityInfo}>
-              <Text style={styles.activityTitle}>
-                Fingerprint used
-              </Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardHeader}>
+                      {lock.lock_name}
+                    </Text>
 
-              <Text style={styles.activitySubtext}>
-                Door unlocked
-              </Text>
-            </View>
+                    <Text style={styles.status}>
+                      Status:{' '}
+                      {lock.status || 'Unknown'}
+                    </Text>
+                  </View>
+                </View>
 
-            <Text style={styles.activityTime}>2m ago</Text>
-          </View>
+                <Text style={styles.sectionTitle}>
+                  Access Credentials
+                </Text>
 
-          <View style={styles.activityRow}>
-            <Ionicons
-              name="card-outline"
-              size={20}
-              color="#111"
-            />
+                <Text style={styles.fieldLabel}>
+                  Passcode
+                </Text>
 
-            <View style={styles.activityInfo}>
-              <Text style={styles.activityTitle}>
-                NFC card used
-              </Text>
+                <View style={styles.passcodeRow}>
+                  <TextInput
+                    style={styles.passcodeInput}
+                    value={
+                      passcode
+                        ? visiblePasscodes[lock.lock_id]
+                          ? String(passcode.passcode)
+                          : '••••••'
+                        : 'No active passcode'
+                    }
+                    editable={false}
+                    secureTextEntry={false}
+                  />
 
-              <Text style={styles.activitySubtext}>
-                Door unlocked
-              </Text>
-            </View>
+                  {passcode && (
+                    <TouchableOpacity
+                      style={styles.eyeButton}
+                      onPress={() =>
+                        togglePasscode(lock.lock_id)
+                      }
+                    >
+                      <Ionicons
+                        name={
+                          visiblePasscodes[lock.lock_id]
+                            ? 'eye-off-outline'
+                            : 'eye-outline'
+                        }
+                        size={21}
+                        color="#111"
+                      />
+                    </TouchableOpacity>
+                  )}
 
-            <Text style={styles.activityTime}>15m ago</Text>
-          </View>
-        </View>
+                  {passcode && (
+                    <TouchableOpacity
+                      onPress={() =>
+                        resetPasscode(lock.lock_id)
+                      }
+                    >
+                      <Text style={styles.resetText}>
+                        Reset
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {passcode?.expires_at && (
+                  <Text style={styles.updatedText}>
+                    Expires:{' '}
+                    {new Date(
+                      passcode.expires_at
+                    ).toLocaleString()}
+                  </Text>
+                )}
+
+                <View style={styles.divider} />
+
+                <Text style={styles.fieldLabel}>
+                  NFC
+                </Text>
+
+                <View style={styles.manageRow}>
+                  <Text style={styles.registeredText}>
+                    Registered Cards
+                  </Text>
+
+                  <Text style={styles.countText}>
+                    —
+                  </Text>
+                </View>
+
+                <View style={styles.divider} />
+
+                <Text style={styles.fieldLabel}>
+                  Fingerprint
+                </Text>
+
+                <View style={styles.manageRow}>
+                  <Text style={styles.registeredText}>
+                    Registered Fingerprints
+                  </Text>
+
+                  <Text style={styles.countText}>
+                    —
+                  </Text>
+                </View>
+              </View>
+            );
+          })
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -257,274 +310,143 @@ const styles = StyleSheet.create({
   },
 
   content: {
-    paddingHorizontal: 18,
-    paddingTop: 12,
+    padding: 20,
     paddingBottom: 110,
   },
 
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-
   brandTitle: {
-    fontSize: 21,
+    fontSize: 20,
     fontWeight: '800',
   },
 
   welcomeSub: {
-    fontSize: 13,
+    fontSize: 14,
     color: '#666',
-    marginTop: 2,
+    marginBottom: 20,
   },
 
-  onlineBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#eeeeee',
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    borderRadius: 12,
-  },
-
-  onlineDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: '#555',
-    marginRight: 5,
-  },
-
-  onlineText: {
-    fontSize: 9,
-    fontWeight: '800',
-  },
-
-  lockCard: {
+  mainCard: {
     backgroundColor: '#eeeeee',
     borderRadius: 20,
     padding: 18,
-    marginTop: 25,
+    marginBottom: 12,
   },
 
   lockHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-  },
-
-  lockName: {
-    fontSize: 15,
-    fontWeight: '800',
-  },
-
-  lockSubtext: {
-    fontSize: 10,
-    color: '#777',
-    marginTop: 3,
   },
 
   lockIcon: {
-    width: 45,
-    height: 45,
-    borderRadius: 23,
+    width: 48,
+    height: 48,
+    borderRadius: 15,
     backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  lockStatus: {
-    backgroundColor: '#fff',
-    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 23,
-    marginTop: 15,
+    marginRight: 12,
   },
 
-  lockedText: {
+  cardHeader: {
     fontSize: 16,
     fontWeight: '800',
-    marginTop: 7,
   },
 
-  lastUpdated: {
-    fontSize: 9,
-    color: '#888',
-    marginTop: 4,
-  },
-
-  controlRow: {
-    flexDirection: 'row',
-    marginTop: 12,
-    gap: 10,
-  },
-
-  unlockButton: {
-    flex: 1,
-    height: 45,
-    borderRadius: 13,
-    backgroundColor: '#111',
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  unlockText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '800',
-    marginLeft: 6,
-  },
-
-  lockButton: {
-    flex: 1,
-    height: 45,
-    borderRadius: 13,
-    backgroundColor: '#fff',
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  lockText: {
-    color: '#111',
-    fontSize: 12,
-    fontWeight: '800',
-    marginLeft: 6,
-  },
-
-  sectionCard: {
-    backgroundColor: '#eeeeee',
-    borderRadius: 18,
-    padding: 16,
-    marginTop: 13,
+  status: {
+    fontSize: 11,
+    color: '#666',
+    marginTop: 3,
   },
 
   sectionTitle: {
     fontSize: 14,
     fontWeight: '800',
-    marginBottom: 13,
+    marginTop: 20,
+    marginBottom: 10,
   },
 
   fieldLabel: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
-    marginBottom: 5,
+    marginTop: 8,
   },
 
   passcodeRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginTop: 6,
   },
 
   passcodeInput: {
     flex: 1,
-    height: 40,
+    height: 42,
     backgroundColor: '#fff',
-    borderRadius: 13,
-    paddingHorizontal: 13,
-    fontSize: 11,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    fontSize: 13,
+  },
+
+  eyeButton: {
+    width: 42,
+    height: 42,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: -42,
   },
 
   resetText: {
-    fontSize: 10,
-    fontWeight: '700',
-    marginLeft: 10,
+    fontSize: 11,
+    marginLeft: 12,
+    color: '#333',
+    fontWeight: '600',
   },
 
   updatedText: {
-    fontSize: 9,
-    color: '#888',
-    marginTop: 4,
-    marginBottom: 10,
-  },
-
-  credentialRow: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 8,
-  },
-
-  credentialIcon: {
-    width: 37,
-    height: 37,
-    borderRadius: 19,
-    backgroundColor: '#eeeeee',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  credentialInfo: {
-    flex: 1,
-    marginLeft: 10,
-  },
-
-  credentialTitle: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
-
-  credentialSubtext: {
-    fontSize: 9,
-    color: '#777',
-    marginTop: 2,
-  },
-
-  manageButton: {
-    backgroundColor: '#eeeeee',
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 10,
-  },
-
-  manageText: {
-    fontSize: 9,
-    fontWeight: '700',
-  },
-
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-
-  viewAll: {
     fontSize: 10,
     color: '#666',
-    fontStyle: 'italic',
+    marginTop: 5,
   },
 
-  activityRow: {
-    backgroundColor: '#fff',
-    borderRadius: 13,
-    padding: 11,
+  divider: {
+    height: 1,
+    backgroundColor: '#d3d3d3',
+    marginVertical: 14,
+  },
+
+  manageRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 8,
+    marginTop: 5,
   },
 
-  activityInfo: {
-    flex: 1,
-    marginLeft: 10,
+  registeredText: {
+    fontSize: 11,
+    color: '#333',
   },
 
-  activityTitle: {
-    fontSize: 10,
+  countText: {
+    fontSize: 12,
     fontWeight: '700',
   },
 
-  activitySubtext: {
-    fontSize: 9,
-    color: '#777',
-    marginTop: 2,
+  emptyCard: {
+    backgroundColor: '#eeeeee',
+    borderRadius: 20,
+    padding: 35,
+    alignItems: 'center',
   },
 
-  activityTime: {
-    fontSize: 9,
-    color: '#888',
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 10,
+  },
+
+  emptyText: {
+    color: '#777',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 5,
   },
 });

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,19 +7,162 @@ import {
   TouchableOpacity,
   SafeAreaView,
   Dimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '../lib/supabase';
 
 const { width } = Dimensions.get('window');
 
 export default function DashboardScreen() {
+  const [properties, setProperties] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [locks, setLocks] = useState([]);
+  const [activities, setActivities] = useState([]);
+  const [guests, setGuests] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadDashboard = async () => {
+    try {
+      const [
+        propertiesResult,
+        unitsResult,
+        locksResult,
+        activitiesResult,
+        guestsResult,
+      ] = await Promise.all([
+        supabase
+          .from('properties')
+          .select('*')
+          .order('created_at', { ascending: false }),
+
+        supabase
+          .from('property_units')
+          .select('*')
+          .order('created_at', { ascending: false }),
+
+        supabase
+          .from('smart_locks')
+          .select('*')
+          .order('created_at', { ascending: false }),
+
+        supabase
+          .from('activity_logs')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(5),
+
+        supabase
+          .from('guests')
+          .select('*')
+          .order('check_in', { ascending: true })
+          .limit(5),
+      ]);
+
+      if (propertiesResult.data) {
+        setProperties(propertiesResult.data);
+      }
+
+      if (unitsResult.data) {
+        setUnits(unitsResult.data);
+      }
+
+      if (locksResult.data) {
+        setLocks(locksResult.data);
+      }
+
+      if (activitiesResult.data) {
+        setActivities(activitiesResult.data);
+      }
+
+      if (guestsResult.data) {
+        setGuests(guestsResult.data);
+      }
+    } catch (error) {
+      console.log('Dashboard error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboard();
+
+    const channel = supabase
+      .channel('dashboard-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'properties',
+        },
+        loadDashboard
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'property_units',
+        },
+        loadDashboard
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'smart_locks',
+        },
+        loadDashboard
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'activity_logs',
+        },
+        loadDashboard
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const formatActivity = (activity) => {
+    return activity.description ||
+      activity.event_type ||
+      'System activity';
+  };
+
+  const formatTime = (date) => {
+    if (!date) return '';
+
+    const diff =
+      Math.floor(
+        (Date.now() - new Date(date).getTime()) / 60000
+      );
+
+    if (diff < 1) return 'Just now';
+    if (diff < 60) return `${diff}m ago`;
+
+    const hours = Math.floor(diff / 60);
+
+    if (hours < 24) return `${hours}h ago`;
+
+    return `${Math.floor(hours / 24)}d ago`;
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* HEADER */}
         <View style={styles.header}>
           <View>
             <Text style={styles.brandTitle}>SECURTAP</Text>
@@ -37,187 +180,181 @@ export default function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.dateText}>June xx, xxxx</Text>
+        <Text style={styles.dateText}>
+          {new Date().toLocaleDateString()}
+        </Text>
 
-        {/* SUMMARY CARDS */}
-        <View style={styles.metricsRow}>
-          <View style={styles.metricCard}>
-            <View style={styles.iconCircle}>
-              <Ionicons
-                name="business-outline"
-                size={21}
-                color="#111"
-              />
+        {loading ? (
+          <ActivityIndicator
+            size="small"
+            color="#111"
+            style={{ marginTop: 20 }}
+          />
+        ) : (
+          <>
+            <View style={styles.metricsRow}>
+              <View style={styles.metricCard}>
+                <View style={styles.iconCircle}>
+                  <Ionicons
+                    name="business-outline"
+                    size={21}
+                    color="#111"
+                  />
+                </View>
+
+                <Text style={styles.metricNumber}>
+                  {properties.length}
+                </Text>
+
+                <Text style={styles.metricLabel}>
+                  Properties
+                </Text>
+              </View>
+
+              <View style={styles.metricCard}>
+                <View style={styles.iconCircle}>
+                  <Ionicons
+                    name="home-outline"
+                    size={21}
+                    color="#111"
+                  />
+                </View>
+
+                <Text style={styles.metricNumber}>
+                  {units.length}
+                </Text>
+
+                <Text style={styles.metricLabel}>
+                  Active Units
+                </Text>
+              </View>
+
+              <View style={styles.metricCard}>
+                <View style={styles.iconCircle}>
+                  <Ionicons
+                    name="lock-closed-outline"
+                    size={21}
+                    color="#111"
+                  />
+                </View>
+
+                <Text style={styles.metricNumber}>
+                  {
+                    locks.filter(
+                      lock =>
+                        lock.status === 'locked'
+                    ).length
+                  }
+                </Text>
+
+                <Text style={styles.metricLabel}>
+                  Locked
+                </Text>
+              </View>
             </View>
 
-            <Text style={styles.metricNumber}>3</Text>
-            <Text style={styles.metricLabel}>Properties</Text>
-          </View>
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>
+                  Recent Activities
+                </Text>
+              </View>
 
-          <View style={styles.metricCard}>
-            <View style={styles.iconCircle}>
-              <Ionicons
-                name="home-outline"
-                size={21}
-                color="#111"
-              />
+              {activities.length === 0 ? (
+                <View style={styles.emptyCard}>
+                  <Text style={styles.emptyText}>
+                    No recent activities.
+                  </Text>
+                </View>
+              ) : (
+                activities.map(activity => (
+                  <View
+                    key={activity.log_id}
+                    style={styles.activityCard}
+                  >
+                    <View style={styles.activityIcon}>
+                      <Ionicons
+                        name="pulse-outline"
+                        size={20}
+                        color="#111"
+                      />
+                    </View>
+
+                    <View style={styles.activityInfo}>
+                      <Text style={styles.activityTitle}>
+                        {activity.event_type || 'Activity'}
+                      </Text>
+
+                      <Text style={styles.activityDescription}>
+                        {formatActivity(activity)}
+                      </Text>
+                    </View>
+
+                    <Text style={styles.activityTime}>
+                      {formatTime(activity.created_at)}
+                    </Text>
+                  </View>
+                ))
+              )}
             </View>
 
-            <Text style={styles.metricNumber}>8</Text>
-            <Text style={styles.metricLabel}>Active Units</Text>
-          </View>
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>
+                  Upcoming Check-ins
+                </Text>
+              </View>
 
-          <View style={styles.metricCard}>
-            <View style={styles.iconCircle}>
-              <Ionicons
-                name="lock-closed-outline"
-                size={21}
-                color="#111"
-              />
+              {guests.length === 0 ? (
+                <View style={styles.emptyCard}>
+                  <Text style={styles.emptyText}>
+                    No upcoming guests.
+                  </Text>
+                </View>
+              ) : (
+                guests.map(guest => (
+                  <View
+                    key={guest.guest_id}
+                    style={styles.checkInCard}
+                  >
+                    <View style={styles.guestAvatar}>
+                      <Ionicons
+                        name="person-outline"
+                        size={22}
+                        color="#111"
+                      />
+                    </View>
+
+                    <View style={styles.guestInfo}>
+                      <Text style={styles.guestName}>
+                        {guest.full_name}
+                      </Text>
+
+                      <Text style={styles.guestProperty}>
+                        {guest.booking_reference || 'Guest'}
+                      </Text>
+
+                      <Text style={styles.guestDate}>
+                        Check-in:{' '}
+                        {guest.check_in
+                          ? new Date(
+                              guest.check_in
+                            ).toLocaleDateString()
+                          : 'N/A'}
+                      </Text>
+                    </View>
+
+                    <Ionicons
+                      name="chevron-forward"
+                      size={20}
+                      color="#777"
+                    />
+                  </View>
+                ))
+              )}
             </View>
-
-            <Text style={styles.metricNumber}>2</Text>
-            <Text style={styles.metricLabel}>Locked</Text>
-          </View>
-        </View>
-
-        {/* RECENT ACTIVITIES */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Recent Activities</Text>
-
-            <TouchableOpacity>
-              <Text style={styles.viewAll}>View All</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.activityCard}>
-            <View style={styles.activityIcon}>
-              <Ionicons
-                name="lock-open-outline"
-                size={20}
-                color="#111"
-              />
-            </View>
-
-            <View style={styles.activityInfo}>
-              <Text style={styles.activityTitle}>
-                Airbnb 1 unlocked
-              </Text>
-
-              <Text style={styles.activityDescription}>
-                Fingerprint authentication
-              </Text>
-            </View>
-
-            <Text style={styles.activityTime}>2m ago</Text>
-          </View>
-
-          <View style={styles.activityCard}>
-            <View style={styles.activityIcon}>
-              <Ionicons
-                name="card-outline"
-                size={20}
-                color="#111"
-              />
-            </View>
-
-            <View style={styles.activityInfo}>
-              <Text style={styles.activityTitle}>
-                NFC card used
-              </Text>
-
-              <Text style={styles.activityDescription}>
-                Airbnb 2 Smart Lock
-              </Text>
-            </View>
-
-            <Text style={styles.activityTime}>15m ago</Text>
-          </View>
-
-          <View style={styles.activityCard}>
-            <View style={styles.activityIcon}>
-              <Ionicons
-                name="lock-closed-outline"
-                size={20}
-                color="#111"
-              />
-            </View>
-
-            <View style={styles.activityInfo}>
-              <Text style={styles.activityTitle}>
-                Airbnb 3 locked
-              </Text>
-
-              <Text style={styles.activityDescription}>
-                Automatic lock
-              </Text>
-            </View>
-
-            <Text style={styles.activityTime}>32m ago</Text>
-          </View>
-        </View>
-
-        {/* UPCOMING CHECK-INS */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>
-              Upcoming Check-ins
-            </Text>
-
-            <TouchableOpacity>
-              <Text style={styles.viewAll}>View All</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.checkInCard}>
-            <View style={styles.guestAvatar}>
-              <Ionicons
-                name="person-outline"
-                size={22}
-                color="#111"
-              />
-            </View>
-
-            <View style={styles.guestInfo}>
-              <Text style={styles.guestName}>Kyle Sksksks</Text>
-              <Text style={styles.guestProperty}>AIRBNB 1</Text>
-              <Text style={styles.guestDate}>
-                Check-in: June xx, xxxx
-              </Text>
-            </View>
-
-            <Ionicons
-              name="chevron-forward"
-              size={20}
-              color="#777"
-            />
-          </View>
-
-          <View style={styles.checkInCard}>
-            <View style={styles.guestAvatar}>
-              <Ionicons
-                name="person-outline"
-                size={22}
-                color="#111"
-              />
-            </View>
-
-            <View style={styles.guestInfo}>
-              <Text style={styles.guestName}>Guest Name</Text>
-              <Text style={styles.guestProperty}>AIRBNB 2</Text>
-              <Text style={styles.guestDate}>
-                Check-in: June xx, xxxx
-              </Text>
-            </View>
-
-            <Ionicons
-              name="chevron-forward"
-              size={20}
-              color="#777"
-            />
-          </View>
-        </View>
+          </>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -245,7 +382,6 @@ const styles = StyleSheet.create({
     fontSize: 21,
     fontWeight: '800',
     color: '#111',
-    letterSpacing: 0.5,
   },
 
   welcomeSub: {
@@ -321,9 +457,6 @@ const styles = StyleSheet.create({
   },
 
   sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     marginBottom: 10,
   },
 
@@ -331,12 +464,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     color: '#111',
-  },
-
-  viewAll: {
-    fontSize: 11,
-    color: '#666',
-    fontStyle: 'italic',
   },
 
   activityCard: {
@@ -421,5 +548,17 @@ const styles = StyleSheet.create({
     fontSize: 9,
     color: '#777',
     marginTop: 3,
+  },
+
+  emptyCard: {
+    backgroundColor: '#eeeeee',
+    borderRadius: 15,
+    padding: 20,
+    alignItems: 'center',
+  },
+
+  emptyText: {
+    color: '#777',
+    fontSize: 12,
   },
 });

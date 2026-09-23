@@ -1,8 +1,15 @@
-import React, { useState } from 'react';
-import { StyleSheet } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import {
+  StyleSheet,
+  ActivityIndicator,
+  View,
+} from 'react-native';
+
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
+
+import { supabase } from './src/lib/supabase';
 
 import LoginScreen from './src/screens/LoginScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
@@ -10,6 +17,8 @@ import PropertiesScreen from './src/screens/PropertiesScreen';
 import GuestsScreen from './src/screens/GuestsScreen';
 import LockManagementScreen from './src/screens/LockManagementScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+
+import NetworkStatus from './src/components/NetworkStatus';
 
 const Tab = createBottomTabNavigator();
 
@@ -32,7 +41,7 @@ function MainAppTabs({ onLogout }) {
             iconName = 'people-outline';
           } else if (route.name === 'Lock') {
             iconName = 'key-outline';
-          } else if (route.name === 'More') {
+          } else {
             iconName = 'ellipsis-horizontal-outline';
           }
 
@@ -81,32 +90,116 @@ function MainAppTabs({ onLogout }) {
 }
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [session, setSession] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  const handleLogin = () => {
-    setIsLoggedIn(true);
+  useEffect(() => {
+    let mounted = true;
+
+    const getSession = async () => {
+      try {
+        const {
+          data,
+          error,
+        } = await supabase.auth.getSession();
+
+        if (error) {
+          console.log('Session error:', error);
+
+          if (mounted) {
+            setSession(null);
+          }
+
+          return;
+        }
+
+        if (mounted) {
+          setSession(data.session);
+        }
+      } catch (error) {
+        console.log('Session check failed:', error);
+
+        if (mounted) {
+          setSession(null);
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    getSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (mounted) {
+          setSession(session);
+        }
+      }
+    );
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      const { error } = await supabase.auth.signOut();
+
+      if (error) {
+        console.log('Logout error:', error);
+        return;
+      }
+
+      setSession(null);
+    } catch (error) {
+      console.log('Logout failed:', error);
+    }
   };
 
-  const handleLogout = () => {
-    setIsLoggedIn(false);
-  };
+  if (loading) {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator
+          size="large"
+          color="#000"
+        />
+      </View>
+    );
+  }
 
   return (
-    <NavigationContainer>
-      {isLoggedIn ? (
-        <MainAppTabs
-          onLogout={handleLogout}
-        />
-      ) : (
-        <LoginScreen
-          onLoginSuccess={handleLogin}
-        />
-      )}
-    </NavigationContainer>
+    <>
+      <NavigationContainer>
+        {session ? (
+          <MainAppTabs
+            onLogout={handleLogout}
+          />
+        ) : (
+          <LoginScreen
+            onLoginSuccess={setSession}
+          />
+        )}
+      </NavigationContainer>
+
+      <NetworkStatus />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
+  loading: {
+    flex: 1,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
   tabBar: {
     backgroundColor: '#eeeeee',
     borderRadius: 30,

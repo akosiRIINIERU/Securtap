@@ -1,120 +1,159 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   SafeAreaView,
-  ScrollView,
   TouchableOpacity,
+  ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '../lib/supabase';
 
 export default function GuestsScreen() {
+  const [guests, setGuests] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadGuests = async () => {
+    const { data, error } = await supabase
+      .from('guests')
+      .select('*')
+      .order('check_in', { ascending: true });
+
+    if (error) {
+      console.log(error);
+      return;
+    }
+
+    setGuests(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadGuests();
+
+    const channel = supabase
+      .channel('guests-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'guests',
+        },
+        loadGuests
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
-        showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
       >
-        {/* HEADER */}
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.brandTitle}>SECURTAP</Text>
-            <Text style={styles.welcomeSub}>Guest Management</Text>
-          </View>
+        <Text style={styles.brandTitle}>SECURTAP</Text>
+        <Text style={styles.welcomeSub}>Guests</Text>
 
-          <TouchableOpacity style={styles.addIcon}>
-            <Ionicons name="person-add-outline" size={21} color="#111" />
-          </TouchableOpacity>
-        </View>
-
-        {/* TITLE */}
-        <View style={styles.titleRow}>
-          <Text style={styles.pageTitle}>Guests</Text>
-
-          <Text style={styles.guestCount}>12 Guests</Text>
-        </View>
-
-        {/* GUEST CARD */}
-        <View style={styles.guestCard}>
-          <View style={styles.avatar}>
+        {loading ? (
+          <ActivityIndicator
+            size="large"
+            color="#000"
+            style={{ marginTop: 30 }}
+          />
+        ) : guests.length === 0 ? (
+          <View style={styles.emptyCard}>
             <Ionicons
-              name="person-outline"
-              size={25}
-              color="#111"
-            />
-          </View>
-
-          <View style={styles.guestInfo}>
-            <Text style={styles.guestName}>KYLE SKSKSKS</Text>
-
-            <Text style={styles.propertyText}>
-              AIRBNB 1
-            </Text>
-
-            <Text style={styles.detailText}>
-              Check-in: June xx, xxxx
-            </Text>
-
-            <Text style={styles.detailText}>
-              Check-out: June xx, xxxx
-            </Text>
-          </View>
-
-          <View style={styles.paidBadge}>
-            <Text style={styles.paidText}>PAID</Text>
-          </View>
-        </View>
-
-        {/* DETAILS */}
-        <View style={styles.detailsCard}>
-          <Text style={styles.detailsTitle}>Guest Details</Text>
-
-          <View style={styles.detailRow}>
-            <Ionicons
-              name="call-outline"
-              size={17}
-              color="#555"
+              name="people-outline"
+              size={42}
+              color="#777"
             />
 
-            <Text style={styles.detailValue}>
-              Phone number
+            <Text style={styles.emptyTitle}>
+              No Guests
+            </Text>
+
+            <Text style={styles.emptyText}>
+              No guest records have been added yet.
             </Text>
           </View>
+        ) : (
+          guests.map(guest => (
+            <View
+              key={guest.guest_id}
+              style={styles.mainCard}
+            >
+              <View style={styles.cardHeaderRow}>
+                <View style={styles.avatar}>
+                  <Ionicons
+                    name="person-outline"
+                    size={22}
+                    color="#111"
+                  />
+                </View>
 
-          <View style={styles.detailRow}>
-            <Ionicons
-              name="mail-outline"
-              size={17}
-              color="#555"
-            />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.guestName}>
+                    {guest.full_name}
+                  </Text>
 
-            <Text style={styles.detailValue}>
-              Email Address
-            </Text>
-          </View>
+                  <Text style={styles.bookingReference}>
+                    {guest.booking_reference ||
+                      'No booking reference'}
+                  </Text>
+                </View>
+              </View>
 
-          <View style={styles.detailRow}>
-            <Ionicons
-              name="document-text-outline"
-              size={17}
-              color="#555"
-            />
+              <View style={styles.detailsGroup}>
+                <Text style={styles.detailText}>
+                  Phone: {guest.phone || 'Not provided'}
+                </Text>
 
-            <Text style={styles.detailValue}>
-              Booking Reference
-            </Text>
-          </View>
-        </View>
+                <Text style={styles.detailText}>
+                  Email: {guest.email || 'Not provided'}
+                </Text>
 
-        {/* ACTION */}
-        <TouchableOpacity style={styles.bookButton}>
-          <Ionicons name="add" size={20} color="#111" />
+                <Text style={styles.detailText}>
+                  Payment Status:{' '}
+                  {guest.payment_status || 'Pending'}
+                </Text>
 
-          <Text style={styles.bookButtonText}>
-            Book New Guest
-          </Text>
-        </TouchableOpacity>
+                <Text style={styles.detailText}>
+                  Check-in:{' '}
+                  {guest.check_in
+                    ? new Date(
+                        guest.check_in
+                      ).toLocaleDateString()
+                    : 'N/A'}
+                </Text>
+
+                <Text style={styles.detailText}>
+                  Check-out:{' '}
+                  {guest.check_out
+                    ? new Date(
+                        guest.check_out
+                      ).toLocaleDateString()
+                    : 'N/A'}
+                </Text>
+
+                <Text style={styles.detailText}>
+                  Status: {guest.status || 'Active'}
+                </Text>
+              </View>
+
+              <TouchableOpacity style={styles.actionButton}>
+                <Text style={styles.actionButtonText}>
+                  View Guest
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ))
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -127,147 +166,96 @@ const styles = StyleSheet.create({
   },
 
   content: {
-    paddingHorizontal: 18,
-    paddingTop: 12,
+    padding: 20,
     paddingBottom: 110,
   },
 
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-
   brandTitle: {
-    fontSize: 21,
+    fontSize: 20,
     fontWeight: '800',
   },
 
   welcomeSub: {
-    fontSize: 13,
+    fontSize: 14,
     color: '#666',
-    marginTop: 2,
+    marginBottom: 20,
   },
 
-  addIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  mainCard: {
     backgroundColor: '#eeeeee',
-    justifyContent: 'center',
-    alignItems: 'center',
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 12,
   },
 
-  titleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 28,
-    marginBottom: 13,
-  },
-
-  pageTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
-
-  guestCount: {
-    fontSize: 11,
-    color: '#777',
-  },
-
-  guestCard: {
-    backgroundColor: '#eeeeee',
-    borderRadius: 18,
-    padding: 14,
+  cardHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 15,
   },
 
   avatar: {
-    width: 55,
-    height: 55,
-    borderRadius: 28,
+    width: 45,
+    height: 45,
+    borderRadius: 23,
     backgroundColor: '#fff',
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
     marginRight: 12,
   },
 
-  guestInfo: {
-    flex: 1,
-  },
-
   guestName: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '800',
   },
 
-  propertyText: {
+  bookingReference: {
     fontSize: 10,
-    fontWeight: '600',
-    color: '#555',
-    marginTop: 3,
-  },
-
-  detailText: {
-    fontSize: 9,
     color: '#777',
     marginTop: 3,
   },
 
-  paidBadge: {
-    backgroundColor: '#fff',
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 10,
+  detailsGroup: {
+    marginLeft: 5,
   },
 
-  paidText: {
-    fontSize: 9,
-    fontWeight: '800',
-  },
-
-  detailsCard: {
-    backgroundColor: '#eeeeee',
-    borderRadius: 18,
-    padding: 16,
-    marginTop: 12,
-  },
-
-  detailsTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-    marginBottom: 14,
-  },
-
-  detailRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 9,
-    borderBottomWidth: 1,
-    borderBottomColor: '#d4d4d4',
-  },
-
-  detailValue: {
+  detailText: {
     fontSize: 11,
-    color: '#555',
-    marginLeft: 10,
+    color: '#333',
+    marginVertical: 3,
   },
 
-  bookButton: {
-    height: 50,
-    backgroundColor: '#eeeeee',
+  actionButton: {
+    backgroundColor: '#fff',
+    paddingVertical: 9,
+    paddingHorizontal: 18,
     borderRadius: 15,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
+    alignSelf: 'flex-end',
     marginTop: 15,
   },
 
-  bookButtonText: {
+  actionButtonText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  emptyCard: {
+    backgroundColor: '#eeeeee',
+    borderRadius: 20,
+    padding: 35,
+    alignItems: 'center',
+  },
+
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 10,
+  },
+
+  emptyText: {
+    color: '#777',
     fontSize: 12,
-    fontWeight: '800',
-    marginLeft: 5,
+    textAlign: 'center',
+    marginTop: 5,
   },
 });
