@@ -1,18 +1,23 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+
 import {
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
-  View,
-  ScrollView,
   TouchableOpacity,
-  SafeAreaView,
-  Dimensions,
-  ActivityIndicator,
+  View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../lib/supabase';
 
-const { width } = Dimensions.get('window');
+import { Ionicons } from '@expo/vector-icons';
+
+import {
+  supabase,
+  getSupabaseErrorMessage,
+} from '../lib/supabase';
 
 export default function DashboardScreen() {
   const [properties, setProperties] = useState([]);
@@ -20,9 +25,11 @@ export default function DashboardScreen() {
   const [locks, setLocks] = useState([]);
   const [activities, setActivities] = useState([]);
   const [guests, setGuests] = useState([]);
-  const [loading, setLoading] = useState(true);
 
-  const loadDashboard = async () => {
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadDashboardData = useCallback(async () => {
     try {
       const [
         propertiesResult,
@@ -33,60 +40,77 @@ export default function DashboardScreen() {
       ] = await Promise.all([
         supabase
           .from('properties')
-          .select('*')
-          .order('created_at', { ascending: false }),
+          .select('*'),
 
         supabase
           .from('property_units')
-          .select('*')
-          .order('created_at', { ascending: false }),
+          .select('*'),
 
         supabase
           .from('smart_locks')
-          .select('*')
-          .order('created_at', { ascending: false }),
+          .select('*'),
 
         supabase
           .from('activity_logs')
           .select('*')
-          .order('created_at', { ascending: false })
+          .order('created_at', {
+            ascending: false,
+          })
           .limit(5),
 
         supabase
           .from('guests')
-          .select('*')
-          .order('check_in', { ascending: true })
-          .limit(5),
+          .select('*'),
       ]);
 
-      if (propertiesResult.data) {
-        setProperties(propertiesResult.data);
+      if (propertiesResult.error) {
+        throw propertiesResult.error;
       }
 
-      if (unitsResult.data) {
-        setUnits(unitsResult.data);
+      if (unitsResult.error) {
+        throw unitsResult.error;
       }
 
-      if (locksResult.data) {
-        setLocks(locksResult.data);
+      if (locksResult.error) {
+        throw locksResult.error;
       }
 
-      if (activitiesResult.data) {
-        setActivities(activitiesResult.data);
+      if (activitiesResult.error) {
+        throw activitiesResult.error;
       }
 
-      if (guestsResult.data) {
-        setGuests(guestsResult.data);
+      if (guestsResult.error) {
+        throw guestsResult.error;
       }
+
+      setProperties(propertiesResult.data || []);
+      setUnits(unitsResult.data || []);
+      setLocks(locksResult.data || []);
+      setActivities(activitiesResult.data || []);
+      setGuests(guestsResult.data || []);
+
     } catch (error) {
-      console.log('Dashboard error:', error);
-    } finally {
-      setLoading(false);
+      console.error('Dashboard loading error:', error);
+
+      Alert.alert(
+        'Dashboard Error',
+        getSupabaseErrorMessage(error)
+      );
     }
-  };
+  }, []);
 
   useEffect(() => {
-    loadDashboard();
+    const initialize = async () => {
+      setLoading(true);
+
+      try {
+        await loadDashboardData();
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initialize();
 
     const channel = supabase
       .channel('dashboard-realtime')
@@ -97,7 +121,7 @@ export default function DashboardScreen() {
           schema: 'public',
           table: 'properties',
         },
-        loadDashboard
+        loadDashboardData
       )
       .on(
         'postgres_changes',
@@ -106,7 +130,7 @@ export default function DashboardScreen() {
           schema: 'public',
           table: 'property_units',
         },
-        loadDashboard
+        loadDashboardData
       )
       .on(
         'postgres_changes',
@@ -115,7 +139,7 @@ export default function DashboardScreen() {
           schema: 'public',
           table: 'smart_locks',
         },
-        loadDashboard
+        loadDashboardData
       )
       .on(
         'postgres_changes',
@@ -124,52 +148,73 @@ export default function DashboardScreen() {
           schema: 'public',
           table: 'activity_logs',
         },
-        loadDashboard
+        loadDashboardData
       )
-      .subscribe();
+      .subscribe((status, error) => {
+        if (
+          status === 'CHANNEL_ERROR' ||
+          status === 'TIMED_OUT'
+        ) {
+          console.error(
+            'Dashboard realtime error:',
+            error
+          );
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [loadDashboardData]);
 
-  const formatActivity = (activity) => {
-    return activity.description ||
-      activity.event_type ||
-      'System activity';
+  const handleRefresh = async () => {
+    setRefreshing(true);
+
+    try {
+      await loadDashboardData();
+    } finally {
+      setRefreshing(false);
+    }
   };
 
-  const formatTime = (date) => {
-    if (!date) return '';
-
-    const diff =
-      Math.floor(
-        (Date.now() - new Date(date).getTime()) / 60000
-      );
-
-    if (diff < 1) return 'Just now';
-    if (diff < 60) return `${diff}m ago`;
-
-    const hours = Math.floor(diff / 60);
-
-    if (hours < 24) return `${hours}h ago`;
-
-    return `${Math.floor(hours / 24)}d ago`;
-  };
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#111" />
+        <Text style={styles.loadingText}>
+          Loading dashboard...
+        </Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+          />
+        }
         contentContainerStyle={styles.scrollContent}
       >
+
         <View style={styles.header}>
           <View>
-            <Text style={styles.brandTitle}>SECURTAP</Text>
-            <Text style={styles.welcomeSub}>Welcome, Admin!</Text>
+            <Text style={styles.brandTitle}>
+              SECURTAP
+            </Text>
+
+            <Text style={styles.welcomeSub}>
+              Welcome, Admin!
+            </Text>
           </View>
 
-          <TouchableOpacity style={styles.notificationButton}>
+          <TouchableOpacity
+            style={styles.notificationButton}
+          >
             <Ionicons
               name="notifications-outline"
               size={24}
@@ -184,177 +229,185 @@ export default function DashboardScreen() {
           {new Date().toLocaleDateString()}
         </Text>
 
-        {loading ? (
-          <ActivityIndicator
-            size="small"
-            color="#111"
-            style={{ marginTop: 20 }}
-          />
-        ) : (
-          <>
-            <View style={styles.metricsRow}>
-              <View style={styles.metricCard}>
-                <View style={styles.iconCircle}>
-                  <Ionicons
-                    name="business-outline"
-                    size={21}
-                    color="#111"
-                  />
-                </View>
+        <View style={styles.metricsRow}>
 
-                <Text style={styles.metricNumber}>
-                  {properties.length}
-                </Text>
-
-                <Text style={styles.metricLabel}>
-                  Properties
-                </Text>
-              </View>
-
-              <View style={styles.metricCard}>
-                <View style={styles.iconCircle}>
-                  <Ionicons
-                    name="home-outline"
-                    size={21}
-                    color="#111"
-                  />
-                </View>
-
-                <Text style={styles.metricNumber}>
-                  {units.length}
-                </Text>
-
-                <Text style={styles.metricLabel}>
-                  Active Units
-                </Text>
-              </View>
-
-              <View style={styles.metricCard}>
-                <View style={styles.iconCircle}>
-                  <Ionicons
-                    name="lock-closed-outline"
-                    size={21}
-                    color="#111"
-                  />
-                </View>
-
-                <Text style={styles.metricNumber}>
-                  {
-                    locks.filter(
-                      lock =>
-                        lock.status === 'locked'
-                    ).length
-                  }
-                </Text>
-
-                <Text style={styles.metricLabel}>
-                  Locked
-                </Text>
-              </View>
+          <View style={styles.metricCard}>
+            <View style={styles.iconCircle}>
+              <Ionicons
+                name="business-outline"
+                size={21}
+                color="#111"
+              />
             </View>
 
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>
-                  Recent Activities
-                </Text>
-              </View>
+            <Text style={styles.metricNumber}>
+              {properties.length}
+            </Text>
 
-              {activities.length === 0 ? (
-                <View style={styles.emptyCard}>
-                  <Text style={styles.emptyText}>
-                    No recent activities.
+            <Text style={styles.metricLabel}>
+              Properties
+            </Text>
+          </View>
+
+          <View style={styles.metricCard}>
+            <View style={styles.iconCircle}>
+              <Ionicons
+                name="home-outline"
+                size={21}
+                color="#111"
+              />
+            </View>
+
+            <Text style={styles.metricNumber}>
+              {units.length}
+            </Text>
+
+            <Text style={styles.metricLabel}>
+              Active Units
+            </Text>
+          </View>
+
+          <View style={styles.metricCard}>
+            <View style={styles.iconCircle}>
+              <Ionicons
+                name="lock-closed-outline"
+                size={21}
+                color="#111"
+              />
+            </View>
+
+            <Text style={styles.metricNumber}>
+              {
+                locks.filter(
+                  (lock) =>
+                    lock.status === 'locked'
+                ).length
+              }
+            </Text>
+
+            <Text style={styles.metricLabel}>
+              Locked
+            </Text>
+          </View>
+
+        </View>
+
+        <View style={styles.section}>
+
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>
+              Recent Activities
+            </Text>
+
+            <TouchableOpacity>
+              <Text style={styles.viewAll}>
+                View All
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {activities.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>
+                No recent activities.
+              </Text>
+            </View>
+          ) : (
+            activities.map((activity) => (
+              <View
+                key={activity.id}
+                style={styles.activityCard}
+              >
+                <View style={styles.activityIcon}>
+                  <Ionicons
+                    name="time-outline"
+                    size={20}
+                    color="#111"
+                  />
+                </View>
+
+                <View style={styles.activityInfo}>
+                  <Text style={styles.activityTitle}>
+                    {activity.action ||
+                      'Activity'}
+                  </Text>
+
+                  <Text
+                    style={
+                      styles.activityDescription
+                    }
+                  >
+                    {activity.description ||
+                      'Recent system activity'}
                   </Text>
                 </View>
-              ) : (
-                activities.map(activity => (
-                  <View
-                    key={activity.log_id}
-                    style={styles.activityCard}
-                  >
-                    <View style={styles.activityIcon}>
-                      <Ionicons
-                        name="pulse-outline"
-                        size={20}
-                        color="#111"
-                      />
-                    </View>
-
-                    <View style={styles.activityInfo}>
-                      <Text style={styles.activityTitle}>
-                        {activity.event_type || 'Activity'}
-                      </Text>
-
-                      <Text style={styles.activityDescription}>
-                        {formatActivity(activity)}
-                      </Text>
-                    </View>
-
-                    <Text style={styles.activityTime}>
-                      {formatTime(activity.created_at)}
-                    </Text>
-                  </View>
-                ))
-              )}
-            </View>
-
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>
-                  Upcoming Check-ins
-                </Text>
               </View>
+            ))
+          )}
 
-              {guests.length === 0 ? (
-                <View style={styles.emptyCard}>
-                  <Text style={styles.emptyText}>
-                    No upcoming guests.
+        </View>
+
+        <View style={styles.section}>
+
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>
+              Upcoming Check-ins
+            </Text>
+
+            <TouchableOpacity>
+              <Text style={styles.viewAll}>
+                View All
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {guests.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>
+                No upcoming guests.
+              </Text>
+            </View>
+          ) : (
+            guests.slice(0, 5).map((guest) => (
+              <View
+                key={guest.id}
+                style={styles.checkInCard}
+              >
+                <View style={styles.guestAvatar}>
+                  <Ionicons
+                    name="person-outline"
+                    size={22}
+                    color="#111"
+                  />
+                </View>
+
+                <View style={styles.guestInfo}>
+                  <Text style={styles.guestName}>
+                    {guest.name || 'Guest'}
+                  </Text>
+
+                  <Text style={styles.guestProperty}>
+                    {guest.property_id ||
+                      'Property'}
+                  </Text>
+
+                  <Text style={styles.guestDate}>
+                    Check-in:{' '}
+                    {guest.check_in || 'Not set'}
                   </Text>
                 </View>
-              ) : (
-                guests.map(guest => (
-                  <View
-                    key={guest.guest_id}
-                    style={styles.checkInCard}
-                  >
-                    <View style={styles.guestAvatar}>
-                      <Ionicons
-                        name="person-outline"
-                        size={22}
-                        color="#111"
-                      />
-                    </View>
 
-                    <View style={styles.guestInfo}>
-                      <Text style={styles.guestName}>
-                        {guest.full_name}
-                      </Text>
+                <Ionicons
+                  name="chevron-forward"
+                  size={20}
+                  color="#777"
+                />
+              </View>
+            ))
+          )}
 
-                      <Text style={styles.guestProperty}>
-                        {guest.booking_reference || 'Guest'}
-                      </Text>
+        </View>
 
-                      <Text style={styles.guestDate}>
-                        Check-in:{' '}
-                        {guest.check_in
-                          ? new Date(
-                              guest.check_in
-                            ).toLocaleDateString()
-                          : 'N/A'}
-                      </Text>
-                    </View>
-
-                    <Ionicons
-                      name="chevron-forward"
-                      size={20}
-                      color="#777"
-                    />
-                  </View>
-                ))
-              )}
-            </View>
-          </>
-        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -366,9 +419,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
 
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  loadingText: {
+    marginTop: 12,
+    color: '#666',
+  },
+
   scrollContent: {
-    paddingHorizontal: 18,
-    paddingTop: 12,
+    padding: 20,
     paddingBottom: 100,
   },
 
@@ -379,186 +443,184 @@ const styles = StyleSheet.create({
   },
 
   brandTitle: {
-    fontSize: 21,
+    fontSize: 25,
     fontWeight: '800',
     color: '#111',
   },
 
   welcomeSub: {
-    fontSize: 13,
-    color: '#666',
-    marginTop: 2,
+    fontSize: 14,
+    color: '#777',
+    marginTop: 3,
   },
 
   notificationButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 45,
+    height: 45,
+    borderRadius: 14,
+    backgroundColor: '#f3f3f3',
     justifyContent: 'center',
     alignItems: 'center',
   },
 
   notificationDot: {
     position: 'absolute',
+    right: 10,
     top: 9,
-    right: 9,
     width: 7,
     height: 7,
-    borderRadius: 4,
+    borderRadius: 5,
     backgroundColor: '#111',
   },
 
   dateText: {
-    fontSize: 11,
-    color: '#888',
-    alignSelf: 'flex-end',
-    marginTop: -4,
+    color: '#777',
+    marginTop: 15,
   },
 
   metricsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 22,
-    marginBottom: 25,
+    gap: 10,
+    marginTop: 20,
   },
 
   metricCard: {
-    width: (width - 54) / 3,
-    minHeight: 125,
-    backgroundColor: '#eeeeee',
+    flex: 1,
+    backgroundColor: '#f4f4f4',
     borderRadius: 18,
-    padding: 13,
+    padding: 15,
   },
 
   iconCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-
-  metricNumber: {
-    fontSize: 23,
-    fontWeight: '800',
-    color: '#111',
-  },
-
-  metricLabel: {
-    fontSize: 11,
-    color: '#555',
-    marginTop: 1,
-  },
-
-  section: {
-    marginBottom: 23,
-  },
-
-  sectionHeader: {
-    marginBottom: 10,
-  },
-
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#111',
-  },
-
-  activityCard: {
-    minHeight: 70,
-    backgroundColor: '#eeeeee',
-    borderRadius: 15,
-    padding: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-
-  activityIcon: {
     width: 40,
     height: 40,
     borderRadius: 20,
     backgroundColor: '#fff',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 11,
+  },
+
+  metricNumber: {
+    fontSize: 25,
+    fontWeight: '800',
+    color: '#111',
+    marginTop: 12,
+  },
+
+  metricLabel: {
+    fontSize: 12,
+    color: '#777',
+    marginTop: 3,
+  },
+
+  section: {
+    marginTop: 28,
+  },
+
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+
+  sectionTitle: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: '#111',
+  },
+
+  viewAll: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#555',
+  },
+
+  activityCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f4f4f4',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+  },
+
+  activityIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 
   activityInfo: {
     flex: 1,
+    marginLeft: 12,
   },
 
   activityTitle: {
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: '700',
     color: '#111',
   },
 
   activityDescription: {
-    fontSize: 10,
+    fontSize: 12,
     color: '#777',
     marginTop: 3,
   },
 
-  activityTime: {
-    fontSize: 9,
-    color: '#888',
-  },
-
   checkInCard: {
-    minHeight: 78,
-    backgroundColor: '#eeeeee',
-    borderRadius: 15,
-    padding: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
+    backgroundColor: '#f4f4f4',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
   },
 
   guestAvatar: {
-    width: 43,
-    height: 43,
-    borderRadius: 22,
+    width: 45,
+    height: 45,
+    borderRadius: 15,
     backgroundColor: '#fff',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
   },
 
   guestInfo: {
     flex: 1,
+    marginLeft: 12,
   },
 
   guestName: {
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: '700',
     color: '#111',
   },
 
   guestProperty: {
-    fontSize: 10,
-    fontWeight: '600',
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 3,
     color: '#555',
-    marginTop: 2,
   },
 
   guestDate: {
-    fontSize: 9,
+    fontSize: 12,
     color: '#777',
     marginTop: 3,
   },
 
   emptyCard: {
-    backgroundColor: '#eeeeee',
-    borderRadius: 15,
+    backgroundColor: '#f4f4f4',
+    borderRadius: 16,
     padding: 20,
     alignItems: 'center',
   },
 
   emptyText: {
     color: '#777',
-    fontSize: 12,
   },
 });

@@ -1,37 +1,73 @@
-import React, { useEffect, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useState,
+} from 'react';
+
 import {
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
-  View,
-  SafeAreaView,
   TouchableOpacity,
-  ScrollView,
-  ActivityIndicator,
+  View,
 } from 'react-native';
+
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../lib/supabase';
+
+import {
+  supabase,
+  getSupabaseErrorMessage,
+} from '../lib/supabase';
 
 export default function GuestsScreen() {
   const [guests, setGuests] = useState([]);
+
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const loadGuests = async () => {
-    const { data, error } = await supabase
-      .from('guests')
-      .select('*')
-      .order('check_in', { ascending: true });
+  const loadGuests = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('guests')
+        .select('*')
+        .order('created_at', {
+          ascending: false,
+        });
 
-    if (error) {
-      console.log(error);
-      return;
+      if (error) {
+        throw error;
+      }
+
+      setGuests(data || []);
+    } catch (error) {
+      console.error(
+        'Guests loading error:',
+        error
+      );
+
+      Alert.alert(
+        'Guests Error',
+        getSupabaseErrorMessage(error)
+      );
     }
-
-    setGuests(data || []);
-    setLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
-    loadGuests();
+    const initialize = async () => {
+      setLoading(true);
+
+      try {
+        await loadGuests();
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initialize();
 
     const channel = supabase
       .channel('guests-realtime')
@@ -44,33 +80,73 @@ export default function GuestsScreen() {
         },
         loadGuests
       )
-      .subscribe();
+      .subscribe((status, error) => {
+        if (
+          status === 'CHANNEL_ERROR' ||
+          status === 'TIMED_OUT'
+        ) {
+          console.error(
+            'Guests realtime error:',
+            error
+          );
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [loadGuests]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+
+    try {
+      await loadGuests();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <ActivityIndicator
+          size="large"
+          color="#111"
+        />
+
+        <Text style={styles.loadingText}>
+          Loading guests...
+        </Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
         contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        <Text style={styles.brandTitle}>SECURTAP</Text>
-        <Text style={styles.welcomeSub}>Guests</Text>
-
-        {loading ? (
-          <ActivityIndicator
-            size="large"
-            color="#000"
-            style={{ marginTop: 30 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
           />
-        ) : guests.length === 0 ? (
+        }
+      >
+
+        <Text style={styles.brandTitle}>
+          SECURTAP
+        </Text>
+
+        <Text style={styles.welcomeSub}>
+          Guests
+        </Text>
+
+        {guests.length === 0 ? (
           <View style={styles.emptyCard}>
             <Ionicons
               name="people-outline"
-              size={42}
+              size={45}
               color="#777"
             />
 
@@ -79,81 +155,97 @@ export default function GuestsScreen() {
             </Text>
 
             <Text style={styles.emptyText}>
-              No guest records have been added yet.
+              There are currently no guests registered.
             </Text>
           </View>
         ) : (
-          guests.map(guest => (
+          guests.map((guest) => (
             <View
-              key={guest.guest_id}
+              key={guest.id}
               style={styles.mainCard}
             >
-              <View style={styles.cardHeaderRow}>
+
+              <View style={styles.cardHeader}>
                 <View style={styles.avatar}>
                   <Ionicons
                     name="person-outline"
-                    size={22}
+                    size={23}
                     color="#111"
                   />
                 </View>
 
-                <View style={{ flex: 1 }}>
+                <View style={styles.headerInfo}>
                   <Text style={styles.guestName}>
-                    {guest.full_name}
+                    {guest.name || 'Guest'}
                   </Text>
 
-                  <Text style={styles.bookingReference}>
-                    {guest.booking_reference ||
-                      'No booking reference'}
+                  <Text style={styles.status}>
+                    {guest.status || 'ACTIVE'}
                   </Text>
                 </View>
               </View>
 
               <View style={styles.detailsGroup}>
-                <Text style={styles.detailText}>
-                  Phone: {guest.phone || 'Not provided'}
-                </Text>
 
                 <Text style={styles.detailText}>
-                  Email: {guest.email || 'Not provided'}
+                  Room:{' '}
+                  {guest.unit_id ||
+                    guest.property_id ||
+                    'Not assigned'}
                 </Text>
 
                 <Text style={styles.detailText}>
                   Payment Status:{' '}
-                  {guest.payment_status || 'Pending'}
+                  {guest.payment_status ||
+                    'Not specified'}
+                </Text>
+
+                <Text style={styles.detailText}>
+                  Phone:{' '}
+                  {guest.phone ||
+                    'Not provided'}
+                </Text>
+
+                <Text style={styles.detailText}>
+                  Email:{' '}
+                  {guest.email ||
+                    'Not provided'}
                 </Text>
 
                 <Text style={styles.detailText}>
                   Check-in:{' '}
-                  {guest.check_in
-                    ? new Date(
-                        guest.check_in
-                      ).toLocaleDateString()
-                    : 'N/A'}
+                  {guest.check_in ||
+                    'Not specified'}
                 </Text>
 
                 <Text style={styles.detailText}>
                   Check-out:{' '}
-                  {guest.check_out
-                    ? new Date(
-                        guest.check_out
-                      ).toLocaleDateString()
-                    : 'N/A'}
+                  {guest.check_out ||
+                    'Not specified'}
                 </Text>
 
                 <Text style={styles.detailText}>
-                  Status: {guest.status || 'Active'}
+                  Booking Reference:{' '}
+                  {guest.booking_reference ||
+                    'Not provided'}
                 </Text>
+
               </View>
 
-              <TouchableOpacity style={styles.actionButton}>
-                <Text style={styles.actionButtonText}>
+              <TouchableOpacity
+                style={styles.actionButton}
+              >
+                <Text
+                  style={styles.actionButtonText}
+                >
                   View Guest
                 </Text>
               </TouchableOpacity>
+
             </View>
           ))
         )}
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -165,96 +257,114 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
 
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  loadingText: {
+    marginTop: 12,
+    color: '#666',
+  },
+
   content: {
     padding: 20,
-    paddingBottom: 110,
+    paddingBottom: 100,
   },
 
   brandTitle: {
-    fontSize: 20,
+    fontSize: 25,
     fontWeight: '800',
+    color: '#111',
   },
 
   welcomeSub: {
-    fontSize: 14,
-    color: '#666',
+    fontSize: 15,
+    color: '#777',
+    marginTop: 4,
     marginBottom: 20,
   },
 
   mainCard: {
-    backgroundColor: '#eeeeee',
+    backgroundColor: '#f4f4f4',
     borderRadius: 20,
     padding: 18,
-    marginBottom: 12,
-  },
-
-  cardHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
     marginBottom: 15,
   },
 
-  avatar: {
-    width: 45,
-    height: 45,
-    borderRadius: 23,
-    backgroundColor: '#fff',
+  cardHeader: {
+    flexDirection: 'row',
     alignItems: 'center',
+  },
+
+  avatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: '#fff',
     justifyContent: 'center',
-    marginRight: 12,
+    alignItems: 'center',
+  },
+
+  headerInfo: {
+    marginLeft: 12,
+    flex: 1,
   },
 
   guestName: {
-    fontSize: 15,
+    fontSize: 17,
     fontWeight: '800',
+    color: '#111',
   },
 
-  bookingReference: {
-    fontSize: 10,
-    color: '#777',
-    marginTop: 3,
+  status: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#666',
+    marginTop: 4,
   },
 
   detailsGroup: {
-    marginLeft: 5,
+    marginTop: 18,
   },
 
   detailText: {
-    fontSize: 11,
-    color: '#333',
-    marginVertical: 3,
+    fontSize: 13,
+    color: '#555',
+    marginBottom: 8,
   },
 
   actionButton: {
-    backgroundColor: '#fff',
-    paddingVertical: 9,
-    paddingHorizontal: 18,
-    borderRadius: 15,
-    alignSelf: 'flex-end',
-    marginTop: 15,
+    height: 48,
+    backgroundColor: '#111',
+    borderRadius: 13,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
   },
 
   actionButtonText: {
-    fontSize: 11,
+    color: '#fff',
     fontWeight: '700',
   },
 
   emptyCard: {
-    backgroundColor: '#eeeeee',
-    borderRadius: 20,
-    padding: 35,
+    backgroundColor: '#f4f4f4',
+    borderRadius: 18,
+    padding: 30,
     alignItems: 'center',
   },
 
   emptyTitle: {
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '800',
     marginTop: 10,
   },
 
   emptyText: {
     color: '#777',
-    fontSize: 12,
     textAlign: 'center',
     marginTop: 5,
   },

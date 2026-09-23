@@ -1,71 +1,73 @@
 import React, { useState } from 'react';
 import {
-  StyleSheet,
-  Text,
-  View,
-  TextInput,
-  TouchableOpacity,
-  SafeAreaView,
   ActivityIndicator,
   Alert,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import { supabase } from '../lib/supabase';
-import { getSupabaseErrorMessage } from '../lib/supabase';
 
-export default function LoginScreen({ onLoginSuccess }) {
+import {
+  supabase,
+  getSupabaseErrorMessage,
+} from '../lib/supabase';
+
+export default function LoginScreen({
+  onLoginSuccess,
+  onForgotPassword,
+}) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
- const handleLogin = async () => {
-  if (!email.trim() || !password) {
-    Alert.alert(
-      'Missing Information',
-      'Please enter your email and password.'
-    );
-    return;
-  }
+  const handleLogin = async () => {
+    const cleanEmail = email.trim().toLowerCase();
 
-  try {
+    if (!cleanEmail || !password) {
+      Alert.alert(
+        'Missing Information',
+        'Please enter your email and password.'
+      );
+      return;
+    }
+
     setLoading(true);
 
-    const {
-      data,
-      error,
-    } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
+    try {
+      const { data, error } =
+        await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        });
 
-    if (error) {
+      if (error) {
+        console.error('Login error:', error);
+        throw error;
+      }
+
+      if (!data?.session) {
+        Alert.alert(
+          'Login Failed',
+          'No active session was created. Please try again.'
+        );
+        return;
+      }
+
+      onLoginSuccess(data.session);
+    } catch (error) {
+      console.error('Login error:', error);
+
       Alert.alert(
         'Login Failed',
         getSupabaseErrorMessage(error)
       );
-      return;
+    } finally {
+      setLoading(false);
     }
-
-    if (!data?.session) {
-      Alert.alert(
-        'Login Failed',
-        'A login session could not be created. Please try again.'
-      );
-      return;
-    }
-
-    onLoginSuccess(data.session);
-
-  } catch (error) {
-    console.log('Login error:', error);
-
-    Alert.alert(
-      'Connection Error',
-      getSupabaseErrorMessage(error)
-    );
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -75,37 +77,60 @@ export default function LoginScreen({ onLoginSuccess }) {
           <Text style={styles.xText}>✕</Text>
         </View>
 
-        <Text style={styles.brandTitle}>SECURTAP</Text>
-        <Text style={styles.welcomeText}>Welcome!</Text>
+        <Text style={styles.welcomeText}>
+          Welcome!
+        </Text>
+
+        <Text style={styles.subtitle}>
+          Sign in to your SECURTAP admin account
+        </Text>
 
         <TextInput
           style={styles.input}
-          placeholder="Admin Email"
-          placeholderTextColor="#888"
+          placeholder="Email"
+          placeholderTextColor="#999"
           keyboardType="email-address"
           autoCapitalize="none"
+          autoCorrect={false}
           value={email}
           onChangeText={setEmail}
+          editable={!loading}
         />
 
         <TextInput
           style={styles.input}
           placeholder="Password"
-          placeholderTextColor="#888"
+          placeholderTextColor="#999"
           secureTextEntry
           value={password}
           onChangeText={setPassword}
+          editable={!loading}
         />
 
         <TouchableOpacity
-          style={styles.loginButton}
+          style={styles.forgotButton}
+          onPress={onForgotPassword}
+          disabled={loading}
+        >
+          <Text style={styles.forgotText}>
+            Forgot Password?
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.loginButton,
+            loading && styles.disabledButton,
+          ]}
           onPress={handleLogin}
           disabled={loading}
         >
           {loading ? (
-            <ActivityIndicator color="#000" />
+            <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.loginButtonText}>Log In</Text>
+            <Text style={styles.loginButtonText}>
+              Log In
+            </Text>
           )}
         </TouchableOpacity>
 
@@ -119,66 +144,84 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#fff',
     justifyContent: 'center',
-    paddingHorizontal: 20,
+    padding: 20,
   },
 
   loginCard: {
-    backgroundColor: '#e0e0e0',
-    borderRadius: 24,
-    padding: 24,
-    alignItems: 'center',
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
   },
 
   logoBox: {
-    width: 140,
-    height: 90,
-    borderWidth: 1,
-    borderColor: '#000',
+    width: 75,
+    height: 75,
+    borderRadius: 20,
+    backgroundColor: '#111',
+    alignSelf: 'center',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 15,
+    marginBottom: 25,
   },
 
   xText: {
-    fontSize: 40,
-    color: '#444',
-  },
-
-  brandTitle: {
-    fontSize: 20,
+    color: '#fff',
+    fontSize: 34,
     fontWeight: '800',
-    marginBottom: 2,
   },
 
   welcomeText: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 20,
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#111',
+    textAlign: 'center',
+  },
+
+  subtitle: {
+    fontSize: 14,
+    color: '#777',
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 28,
   },
 
   input: {
-    width: '100%',
-    height: 45,
-    backgroundColor: '#fff',
-    borderRadius: 20,
+    height: 55,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 14,
     paddingHorizontal: 16,
-    marginBottom: 15,
+    fontSize: 16,
+    color: '#111',
+    marginBottom: 14,
+  },
+
+  forgotButton: {
+    alignSelf: 'flex-end',
+    marginBottom: 20,
+  },
+
+  forgotText: {
+    color: '#111',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   loginButton: {
-    backgroundColor: '#fff',
-    minWidth: 100,
-    height: 45,
-    paddingHorizontal: 30,
-    borderRadius: 20,
-    alignItems: 'center',
+    height: 55,
+    borderRadius: 14,
+    backgroundColor: '#111',
     justifyContent: 'center',
-    alignSelf: 'flex-end',
-    marginTop: 10,
+    alignItems: 'center',
+  },
+
+  disabledButton: {
+    opacity: 0.6,
   },
 
   loginButtonText: {
-    fontWeight: '600',
-    color: '#000',
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });

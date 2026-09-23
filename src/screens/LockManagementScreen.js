@@ -1,77 +1,131 @@
-import React, { useEffect, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useState,
+} from 'react';
+
 import {
+  ActivityIndicator,
+  Alert,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
-  View,
-  SafeAreaView,
   TextInput,
   TouchableOpacity,
-  ScrollView,
-  Alert,
-  ActivityIndicator,
+  View,
 } from 'react-native';
+
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../lib/supabase';
+
+import {
+  supabase,
+  getSupabaseErrorMessage,
+} from '../lib/supabase';
 
 export default function LockManagementScreen() {
   const [locks, setLocks] = useState([]);
-  const [passcodes, setPasscodes] = useState({});
-  const [visiblePasscodes, setVisiblePasscodes] = useState({});
+  const [passcodes, setPasscodes] = useState([]);
+
+  const [selectedLock, setSelectedLock] =
+    useState(null);
+
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const loadLocks = async () => {
+  const [visiblePasscodes, setVisiblePasscodes] =
+    useState({});
+
+  const [newPasscode, setNewPasscode] =
+    useState('');
+
+  const [saving, setSaving] = useState(false);
+
+  const loadLocks = useCallback(async () => {
     try {
-      const { data: locksData, error: locksError } =
-        await supabase
-          .from('smart_locks')
-          .select('*')
-          .order('created_at', { ascending: false });
+      const { data, error } = await supabase
+        .from('smart_locks')
+        .select('*')
+        .order('created_at', {
+          ascending: false,
+        });
 
-      if (locksError) {
-        console.log(locksError);
-        return;
+      if (error) {
+        throw error;
       }
 
-      setLocks(locksData || []);
+      setLocks(data || []);
 
-      if (!locksData?.length) {
-        setLoading(false);
-        return;
+      if (
+        data?.length > 0 &&
+        !selectedLock
+      ) {
+        setSelectedLock(data[0]);
       }
 
-      const lockIds = locksData.map(
-        lock => lock.lock_id
+    } catch (error) {
+      console.error(
+        'Lock loading error:',
+        error
       );
 
-      const { data: passcodeData, error: passcodeError } =
-        await supabase
-          .from('lock_passcodes')
-          .select('*')
-          .in('lock_id', lockIds)
-          .eq('is_active', true);
+      Alert.alert(
+        'Lock Error',
+        getSupabaseErrorMessage(error)
+      );
+    }
+  }, [selectedLock]);
 
-      if (passcodeError) {
-        console.log(passcodeError);
-        return;
+  const loadPasscodes = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('lock_passcodes')
+        .select('*')
+        .order('created_at', {
+          ascending: false,
+        });
+
+      if (error) {
+        throw error;
       }
 
-      const passcodeMap = {};
+      setPasscodes(data || []);
+    } catch (error) {
+      console.error(
+        'Passcode loading error:',
+        error
+      );
 
-      (passcodeData || []).forEach(item => {
-        passcodeMap[item.lock_id] = item;
-      });
-
-      setPasscodes(passcodeMap);
-    } finally {
-      setLoading(false);
+      Alert.alert(
+        'Passcode Error',
+        getSupabaseErrorMessage(error)
+      );
     }
-  };
+  }, []);
+
+  const loadData = useCallback(async () => {
+    await Promise.all([
+      loadLocks(),
+      loadPasscodes(),
+    ]);
+  }, [loadLocks, loadPasscodes]);
 
   useEffect(() => {
-    loadLocks();
+    const initialize = async () => {
+      setLoading(true);
+
+      try {
+        await loadData();
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initialize();
 
     const channel = supabase
-      .channel('locks-realtime')
+      .channel('lock-management-realtime')
       .on(
         'postgres_changes',
         {
@@ -79,7 +133,7 @@ export default function LockManagementScreen() {
           schema: 'public',
           table: 'smart_locks',
         },
-        loadLocks
+        loadData
       )
       .on(
         'postgres_changes',
@@ -88,23 +142,56 @@ export default function LockManagementScreen() {
           schema: 'public',
           table: 'lock_passcodes',
         },
-        loadLocks
+        loadData
       )
-      .subscribe();
+      .subscribe((status, error) => {
+        if (
+          status === 'CHANNEL_ERROR' ||
+          status === 'TIMED_OUT'
+        ) {
+          console.error(
+            'Lock realtime error:',
+            error
+          );
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [loadData]);
 
-  const togglePasscode = lockId => {
-    setVisiblePasscodes(previous => ({
-      ...previous,
-      [lockId]: !previous[lockId],
+  const handleRefresh = async () => {
+    setRefreshing(true);
+
+    try {
+      await loadData();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const togglePasscode = (id) => {
+    setVisiblePasscodes((current) => ({
+      ...current,
+      [id]: !current[id],
     }));
   };
 
-  const resetPasscode = async lockId => {
+  const getLockPasscodes = () => {
+    if (!selectedLock) {
+      return [];
+    }
+
+    return passcodes.filter(
+      (passcode) =>
+        passcode.lock_id === selectedLock.id
+    );
+  };
+
+  const handleResetPasscode = async (
+    passcodeId
+  ) => {
     Alert.alert(
       'Reset Passcode',
       'Are you sure you want to deactivate this passcode?',
@@ -117,187 +204,326 @@ export default function LockManagementScreen() {
           text: 'Reset',
           style: 'destructive',
           onPress: async () => {
-            const { error } = await supabase
-              .from('lock_passcodes')
-              .update({
-                is_active: false,
-              })
-              .eq('lock_id', lockId)
-              .eq('is_active', true);
+            try {
+              const { error } = await supabase
+                .from('lock_passcodes')
+                .update({
+                  is_active: false,
+                })
+                .eq('id', passcodeId);
 
-            if (error) {
-              Alert.alert('Error', error.message);
-              return;
+              if (error) {
+                throw error;
+              }
+
+              Alert.alert(
+                'Success',
+                'Passcode has been reset.'
+              );
+
+              await loadPasscodes();
+
+            } catch (error) {
+              console.error(
+                'Reset passcode error:',
+                error
+              );
+
+              Alert.alert(
+                'Unable to Reset Passcode',
+                getSupabaseErrorMessage(error)
+              );
             }
-
-            loadLocks();
           },
         },
       ]
     );
   };
 
+  const handleSavePasscode = async () => {
+    if (!selectedLock) {
+      Alert.alert(
+        'No Lock Selected',
+        'Please select a smart lock first.'
+      );
+      return;
+    }
+
+    if (!newPasscode.trim()) {
+      Alert.alert(
+        'Missing Passcode',
+        'Please enter a passcode.'
+      );
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      const { error } = await supabase
+        .from('lock_passcodes')
+        .insert({
+          lock_id: selectedLock.id,
+          passcode: newPasscode.trim(),
+          is_active: true,
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      Alert.alert(
+        'Success',
+        'New passcode has been created.'
+      );
+
+      setNewPasscode('');
+
+      await loadPasscodes();
+
+    } catch (error) {
+      console.error(
+        'Create passcode error:',
+        error
+      );
+
+      Alert.alert(
+        'Unable to Create Passcode',
+        getSupabaseErrorMessage(error)
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <ActivityIndicator
+          size="large"
+          color="#111"
+        />
+
+        <Text style={styles.loadingText}>
+          Loading lock management...
+        </Text>
+      </SafeAreaView>
+    );
+  }
+
+  const selectedPasscodes =
+    getLockPasscodes();
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
         contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+          />
+        }
       >
-        <Text style={styles.brandTitle}>SECURTAP</Text>
+
+        <Text style={styles.brandTitle}>
+          SECURTAP
+        </Text>
+
         <Text style={styles.welcomeSub}>
           Lock Management
         </Text>
 
-        {loading ? (
-          <ActivityIndicator
-            size="large"
-            color="#000"
-            style={{ marginTop: 30 }}
-          />
-        ) : locks.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Ionicons
-              name="lock-closed-outline"
-              size={42}
-              color="#777"
-            />
+        <View style={styles.mainCard}>
 
-            <Text style={styles.emptyTitle}>
-              No Smart Locks
-            </Text>
+          <Text style={styles.cardHeader}>
+            SMART LOCKS
+          </Text>
 
+          {locks.length === 0 ? (
             <Text style={styles.emptyText}>
-              No smart locks have been registered yet.
+              No smart locks registered.
             </Text>
-          </View>
-        ) : (
-          locks.map(lock => {
-            const passcode = passcodes[lock.lock_id];
-
-            return (
-              <View
-                key={lock.lock_id}
-                style={styles.mainCard}
+          ) : (
+            locks.map((lock) => (
+              <TouchableOpacity
+                key={lock.id}
+                style={[
+                  styles.lockItem,
+                  selectedLock?.id === lock.id &&
+                    styles.selectedLock,
+                ]}
+                onPress={() =>
+                  setSelectedLock(lock)
+                }
               >
-                <View style={styles.lockHeader}>
-                  <View style={styles.lockIcon}>
-                    <Ionicons
-                      name="lock-closed-outline"
-                      size={24}
-                      color="#111"
-                    />
-                  </View>
-
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.cardHeader}>
-                      {lock.lock_name}
-                    </Text>
-
-                    <Text style={styles.status}>
-                      Status:{' '}
-                      {lock.status || 'Unknown'}
-                    </Text>
-                  </View>
+                <View style={styles.lockIcon}>
+                  <Ionicons
+                    name="lock-closed-outline"
+                    size={22}
+                    color="#111"
+                  />
                 </View>
 
-                <Text style={styles.sectionTitle}>
-                  Access Credentials
-                </Text>
+                <View style={styles.lockInfo}>
+                  <Text style={styles.lockName}>
+                    {lock.name ||
+                      'Smart Lock'}
+                  </Text>
 
-                <Text style={styles.fieldLabel}>
-                  Passcode
-                </Text>
+                  <Text style={styles.lockStatus}>
+                    Status:{' '}
+                    {lock.status ||
+                      'Unknown'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))
+          )}
 
-                <View style={styles.passcodeRow}>
-                  <TextInput
-                    style={styles.passcodeInput}
-                    value={
-                      passcode
-                        ? visiblePasscodes[lock.lock_id]
-                          ? String(passcode.passcode)
-                          : '••••••'
-                        : 'No active passcode'
-                    }
-                    editable={false}
-                    secureTextEntry={false}
-                  />
+        </View>
 
-                  {passcode && (
+        {selectedLock && (
+          <View style={styles.mainCard}>
+
+            <Text style={styles.cardHeader}>
+              ACCESS CREDENTIALS
+            </Text>
+
+            <Text style={styles.subText}>
+              Lock Name:{' '}
+              {selectedLock.name ||
+                'Smart Lock'}
+            </Text>
+
+            <Text style={styles.subText}>
+              Status:{' '}
+              {selectedLock.status ||
+                'Unknown'}
+            </Text>
+
+            <Text style={styles.sectionTitle}>
+              Passcodes
+            </Text>
+
+            {selectedPasscodes.length === 0 ? (
+              <Text style={styles.emptyText}>
+                No passcodes registered.
+              </Text>
+            ) : (
+              selectedPasscodes.map(
+                (passcode) => (
+                  <View
+                    key={passcode.id}
+                    style={styles.passcodeCard}
+                  >
+                    <View
+                      style={styles.passcodeInfo}
+                    >
+                      <Text
+                        style={
+                          styles.passcodeLabel
+                        }
+                      >
+                        Passcode
+                      </Text>
+
+                      <TextInput
+                        style={
+                          styles.passcodeInput
+                        }
+                        value={
+                          visiblePasscodes[
+                            passcode.id
+                          ]
+                            ? passcode.passcode ||
+                              ''
+                            : '••••••'
+                        }
+                        editable={false}
+                        secureTextEntry={false}
+                      />
+                    </View>
+
                     <TouchableOpacity
-                      style={styles.eyeButton}
                       onPress={() =>
-                        togglePasscode(lock.lock_id)
+                        togglePasscode(
+                          passcode.id
+                        )
+                      }
+                      style={
+                        styles.eyeButton
                       }
                     >
                       <Ionicons
                         name={
-                          visiblePasscodes[lock.lock_id]
+                          visiblePasscodes[
+                            passcode.id
+                          ]
                             ? 'eye-off-outline'
                             : 'eye-outline'
                         }
-                        size={21}
+                        size={23}
                         color="#111"
                       />
                     </TouchableOpacity>
-                  )}
 
-                  {passcode && (
                     <TouchableOpacity
                       onPress={() =>
-                        resetPasscode(lock.lock_id)
+                        handleResetPasscode(
+                          passcode.id
+                        )
+                      }
+                      style={
+                        styles.resetButton
                       }
                     >
-                      <Text style={styles.resetText}>
+                      <Text
+                        style={
+                          styles.resetText
+                        }
+                      >
                         Reset
                       </Text>
                     </TouchableOpacity>
-                  )}
-                </View>
+                  </View>
+                )
+              )
+            )}
 
-                {passcode?.expires_at && (
-                  <Text style={styles.updatedText}>
-                    Expires:{' '}
-                    {new Date(
-                      passcode.expires_at
-                    ).toLocaleString()}
-                  </Text>
-                )}
+            <Text style={styles.sectionTitle}>
+              Create New Passcode
+            </Text>
 
-                <View style={styles.divider} />
+            <TextInput
+              style={styles.input}
+              placeholder="Enter new passcode"
+              placeholderTextColor="#999"
+              value={newPasscode}
+              onChangeText={setNewPasscode}
+              secureTextEntry
+              editable={!saving}
+            />
 
-                <Text style={styles.fieldLabel}>
-                  NFC
+            <TouchableOpacity
+              style={styles.saveButton}
+              onPress={handleSavePasscode}
+              disabled={saving}
+            >
+              {saving ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text
+                  style={styles.saveButtonText}
+                >
+                  Save Passcode
                 </Text>
+              )}
+            </TouchableOpacity>
 
-                <View style={styles.manageRow}>
-                  <Text style={styles.registeredText}>
-                    Registered Cards
-                  </Text>
-
-                  <Text style={styles.countText}>
-                    —
-                  </Text>
-                </View>
-
-                <View style={styles.divider} />
-
-                <Text style={styles.fieldLabel}>
-                  Fingerprint
-                </Text>
-
-                <View style={styles.manageRow}>
-                  <Text style={styles.registeredText}>
-                    Registered Fingerprints
-                  </Text>
-
-                  <Text style={styles.countText}>
-                    —
-                  </Text>
-                </View>
-              </View>
-            );
-          })
+          </View>
         )}
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -309,144 +535,172 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
 
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  loadingText: {
+    marginTop: 12,
+    color: '#666',
+  },
+
   content: {
     padding: 20,
-    paddingBottom: 110,
+    paddingBottom: 100,
   },
 
   brandTitle: {
-    fontSize: 20,
+    fontSize: 25,
     fontWeight: '800',
+    color: '#111',
   },
 
   welcomeSub: {
-    fontSize: 14,
-    color: '#666',
+    fontSize: 15,
+    color: '#777',
+    marginTop: 4,
     marginBottom: 20,
   },
 
   mainCard: {
-    backgroundColor: '#eeeeee',
+    backgroundColor: '#f4f4f4',
     borderRadius: 20,
     padding: 18,
-    marginBottom: 12,
-  },
-
-  lockHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-
-  lockIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 15,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
+    marginBottom: 15,
   },
 
   cardHeader: {
     fontSize: 16,
     fontWeight: '800',
+    color: '#111',
+    marginBottom: 15,
   },
 
-  status: {
-    fontSize: 11,
-    color: '#666',
+  lockItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: '#fff',
+    marginBottom: 8,
+  },
+
+  selectedLock: {
+    borderWidth: 1,
+    borderColor: '#111',
+  },
+
+  lockIcon: {
+    width: 43,
+    height: 43,
+    borderRadius: 13,
+    backgroundColor: '#f2f2f2',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  lockInfo: {
+    marginLeft: 12,
+  },
+
+  lockName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111',
+  },
+
+  lockStatus: {
+    fontSize: 12,
+    color: '#777',
     marginTop: 3,
   },
 
+  subText: {
+    color: '#555',
+    fontSize: 13,
+    marginBottom: 8,
+  },
+
   sectionTitle: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '800',
-    marginTop: 20,
+    color: '#111',
+    marginTop: 18,
     marginBottom: 10,
   },
 
-  fieldLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 8,
+  passcodeCard: {
+    backgroundColor: '#fff',
+    borderRadius: 15,
+    padding: 12,
+    marginBottom: 10,
   },
 
-  passcodeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 6,
+  passcodeInfo: {
+    marginBottom: 8,
+  },
+
+  passcodeLabel: {
+    fontSize: 12,
+    color: '#777',
+    marginBottom: 5,
   },
 
   passcodeInput: {
-    flex: 1,
-    height: 42,
-    backgroundColor: '#fff',
-    borderRadius: 14,
+    height: 45,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 11,
     paddingHorizontal: 12,
-    fontSize: 13,
+    color: '#111',
   },
 
   eyeButton: {
-    width: 42,
-    height: 42,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: -42,
+    position: 'absolute',
+    right: 12,
+    top: 35,
+  },
+
+  resetButton: {
+    alignSelf: 'flex-end',
+    marginTop: 5,
   },
 
   resetText: {
-    fontSize: 11,
-    marginLeft: 12,
-    color: '#333',
-    fontWeight: '600',
-  },
-
-  updatedText: {
-    fontSize: 10,
-    color: '#666',
-    marginTop: 5,
-  },
-
-  divider: {
-    height: 1,
-    backgroundColor: '#d3d3d3',
-    marginVertical: 14,
-  },
-
-  manageRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 5,
-  },
-
-  registeredText: {
-    fontSize: 11,
-    color: '#333',
-  },
-
-  countText: {
-    fontSize: 12,
+    color: '#b00020',
     fontWeight: '700',
   },
 
-  emptyCard: {
-    backgroundColor: '#eeeeee',
-    borderRadius: 20,
-    padding: 35,
-    alignItems: 'center',
+  input: {
+    height: 52,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 13,
+    paddingHorizontal: 14,
+    color: '#111',
   },
 
-  emptyTitle: {
-    fontSize: 16,
+  saveButton: {
+    height: 52,
+    backgroundColor: '#111',
+    borderRadius: 13,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+
+  saveButtonText: {
+    color: '#fff',
     fontWeight: '700',
-    marginTop: 10,
   },
 
   emptyText: {
     color: '#777',
-    fontSize: 12,
     textAlign: 'center',
-    marginTop: 5,
+    paddingVertical: 15,
   },
 });
