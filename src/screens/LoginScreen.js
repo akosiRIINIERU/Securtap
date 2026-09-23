@@ -1,32 +1,26 @@
 import React, { useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  SafeAreaView,
   StyleSheet,
   Text,
+  View,
   TextInput,
   TouchableOpacity,
-  View,
+  SafeAreaView,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { supabase, getSupabaseErrorMessage } from '../lib/supabase';
 
-import {
-  supabase,
-  getSupabaseErrorMessage,
-} from '../lib/supabase';
-
-export default function LoginScreen({
-  onLoginSuccess,
-  onForgotPassword,
-}) {
+export default function LoginScreen({ onLoginSuccess }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
   const [loading, setLoading] = useState(false);
+  const [forgotLoading, setForgotLoading] = useState(false);
 
   const handleLogin = async () => {
-    const cleanEmail = email.trim().toLowerCase();
-
-    if (!cleanEmail || !password) {
+    if (!email.trim() || !password) {
       Alert.alert(
         'Missing Information',
         'Please enter your email and password.'
@@ -34,38 +28,69 @@ export default function LoginScreen({
       return;
     }
 
-    setLoading(true);
-
     try {
-      const { data, error } =
-        await supabase.auth.signInWithPassword({
-          email: cleanEmail,
-          password,
-        });
+      setLoading(true);
+
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
       if (error) {
-        console.error('Login error:', error);
-        throw error;
+        Alert.alert('Login Failed', getSupabaseErrorMessage(error));
+        return;
       }
 
-      if (!data?.session) {
+      if (data?.session) {
+        onLoginSuccess(data.session);
+      }
+    } catch (error) {
+      Alert.alert('Login Error', getSupabaseErrorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    const cleanEmail = email.trim();
+
+    if (!cleanEmail) {
+      Alert.alert(
+        'Enter Your Gmail',
+        'Please enter your Gmail address in the email field first.'
+      );
+      return;
+    }
+
+    try {
+      setForgotLoading(true);
+
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        cleanEmail,
+        {
+          redirectTo: 'securtap://reset-password',
+        }
+      );
+
+      if (error) {
         Alert.alert(
-          'Login Failed',
-          'No active session was created. Please try again.'
+          'Unable to Send Reset Email',
+          getSupabaseErrorMessage(error)
         );
         return;
       }
 
-      onLoginSuccess(data.session);
-    } catch (error) {
-      console.error('Login error:', error);
-
       Alert.alert(
-        'Login Failed',
+        'Reset Email Sent',
+        `A password reset link has been sent to ${cleanEmail}.\n\nOpen Gmail and tap the link to reset your SECURTAP password.`
+      );
+    } catch (error) {
+      Alert.alert(
+        'Reset Error',
         getSupabaseErrorMessage(error)
       );
     } finally {
-      setLoading(false);
+      setForgotLoading(false);
     }
   };
 
@@ -77,45 +102,38 @@ export default function LoginScreen({
           <Text style={styles.xText}>✕</Text>
         </View>
 
+        <Text style={styles.brandTitle}>SECURTAP</Text>
+
         <Text style={styles.welcomeText}>
           Welcome!
         </Text>
 
         <Text style={styles.subtitle}>
-          Sign in to your SECURTAP admin account
+          Admin Login
         </Text>
 
         <TextInput
           style={styles.input}
-          placeholder="Email"
-          placeholderTextColor="#999"
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoCorrect={false}
+          placeholder="Gmail address"
+          placeholderTextColor="#888"
           value={email}
           onChangeText={setEmail}
-          editable={!loading}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="email-address"
+          editable={!loading && !forgotLoading}
         />
 
         <TextInput
           style={styles.input}
           placeholder="Password"
-          placeholderTextColor="#999"
-          secureTextEntry
+          placeholderTextColor="#888"
           value={password}
           onChangeText={setPassword}
-          editable={!loading}
+          secureTextEntry
+          autoCapitalize="none"
+          editable={!loading && !forgotLoading}
         />
-
-        <TouchableOpacity
-          style={styles.forgotButton}
-          onPress={onForgotPassword}
-          disabled={loading}
-        >
-          <Text style={styles.forgotText}>
-            Forgot Password?
-          </Text>
-        </TouchableOpacity>
 
         <TouchableOpacity
           style={[
@@ -123,7 +141,7 @@ export default function LoginScreen({
             loading && styles.disabledButton,
           ]}
           onPress={handleLogin}
-          disabled={loading}
+          disabled={loading || forgotLoading}
         >
           {loading ? (
             <ActivityIndicator color="#fff" />
@@ -134,6 +152,33 @@ export default function LoginScreen({
           )}
         </TouchableOpacity>
 
+        <TouchableOpacity
+          style={styles.forgotButton}
+          onPress={handleForgotPassword}
+          disabled={loading || forgotLoading}
+        >
+          {forgotLoading ? (
+            <ActivityIndicator size="small" color="#111" />
+          ) : (
+            <Text style={styles.forgotText}>
+              Forgot Password?
+            </Text>
+          )}
+        </TouchableOpacity>
+
+        <View style={styles.infoBox}>
+          <Ionicons
+            name="mail-outline"
+            size={18}
+            color="#555"
+          />
+
+          <Text style={styles.infoText}>
+            Your Gmail address is used to receive password
+            recovery emails.
+          </Text>
+        </View>
+
       </View>
     </SafeAreaView>
   );
@@ -142,77 +187,80 @@ export default function LoginScreen({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#ffffff',
     justifyContent: 'center',
-    padding: 20,
+    paddingHorizontal: 24,
   },
 
   loginCard: {
     width: '100%',
     maxWidth: 420,
     alignSelf: 'center',
+    padding: 24,
+    borderRadius: 24,
+    backgroundColor: '#f5f5f5',
   },
 
   logoBox: {
-    width: 75,
-    height: 75,
-    borderRadius: 20,
-    backgroundColor: '#111',
-    alignSelf: 'center',
+    width: 70,
+    height: 70,
+    borderRadius: 18,
+    backgroundColor: '#111111',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 25,
+    alignSelf: 'center',
+    marginBottom: 18,
   },
 
   xText: {
-    color: '#fff',
+    color: '#ffffff',
     fontSize: 34,
+    fontWeight: '700',
+  },
+
+  brandTitle: {
+    textAlign: 'center',
+    fontSize: 24,
     fontWeight: '800',
+    color: '#111111',
+    letterSpacing: 2,
   },
 
   welcomeText: {
-    fontSize: 30,
-    fontWeight: '800',
-    color: '#111',
     textAlign: 'center',
+    fontSize: 27,
+    fontWeight: '700',
+    color: '#111111',
+    marginTop: 20,
   },
 
   subtitle: {
-    fontSize: 14,
-    color: '#777',
     textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 28,
+    color: '#777777',
+    fontSize: 14,
+    marginTop: 4,
+    marginBottom: 24,
   },
 
   input: {
-    height: 55,
+    height: 52,
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 14,
+    borderColor: '#dddddd',
+    borderRadius: 12,
     paddingHorizontal: 16,
-    fontSize: 16,
-    color: '#111',
+    fontSize: 15,
+    color: '#111111',
     marginBottom: 14,
   },
 
-  forgotButton: {
-    alignSelf: 'flex-end',
-    marginBottom: 20,
-  },
-
-  forgotText: {
-    color: '#111',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-
   loginButton: {
-    height: 55,
-    borderRadius: 14,
-    backgroundColor: '#111',
+    height: 52,
+    borderRadius: 12,
+    backgroundColor: '#111111',
     justifyContent: 'center',
     alignItems: 'center',
+    marginTop: 4,
   },
 
   disabledButton: {
@@ -220,8 +268,38 @@ const styles = StyleSheet.create({
   },
 
   loginButtonText: {
-    color: '#fff',
+    color: '#ffffff',
     fontSize: 16,
     fontWeight: '700',
+  },
+
+  forgotButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    marginTop: 8,
+  },
+
+  forgotText: {
+    color: '#111111',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
+  infoBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#e9e9e9',
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 12,
+  },
+
+  infoText: {
+    flex: 1,
+    marginLeft: 8,
+    color: '#555555',
+    fontSize: 12,
+    lineHeight: 18,
   },
 });

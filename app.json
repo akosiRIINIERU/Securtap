@@ -1,14 +1,17 @@
 {
   "expo": {
-    "name": "securtap",
-    "slug": "securtap",
+    "name": "Securtap",
+    "slug": "Securtap",
     "version": "1.0.0",
     "orientation": "portrait",
+    "scheme": "Securtap",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+
     "ios": {
       "supportsTablet": true
     },
+
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -16,11 +19,13 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "package": "com.Lockdown.securtap"
+      "package": "com.J2KMR.Securtap"
     },
+
     "web": {
       "favicon": "./assets/favicon.png"
     },
+
     "plugins": [
       "expo-font"
     ]

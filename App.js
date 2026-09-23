@@ -1,24 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import {
-  StyleSheet,
-  ActivityIndicator,
-  View,
-} from 'react-native';
-
+import { StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
-
-import { supabase } from './src/lib/supabase';
+import * as Linking from 'expo-linking';
 
 import LoginScreen from './src/screens/LoginScreen';
+import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import PropertiesScreen from './src/screens/PropertiesScreen';
 import GuestsScreen from './src/screens/GuestsScreen';
 import LockManagementScreen from './src/screens/LockManagementScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
-
 import NetworkStatus from './src/components/NetworkStatus';
+
+import { supabase } from './src/lib/supabase';
 
 const Tab = createBottomTabNavigator();
 
@@ -27,11 +23,21 @@ function MainAppTabs({ onLogout }) {
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
-        tabBarShowLabel: false,
-        tabBarStyle: styles.tabBar,
+
+        tabBarActiveTintColor: '#111111',
+        tabBarInactiveTintColor: '#999999',
+
+        tabBarStyle: {
+          height: 65,
+          paddingBottom: 8,
+          paddingTop: 6,
+          backgroundColor: '#ffffff',
+          borderTopWidth: 1,
+          borderTopColor: '#eeeeee',
+        },
 
         tabBarIcon: ({ color, size }) => {
-          let iconName;
+          let iconName = 'ellipse-outline';
 
           if (route.name === 'Home') {
             iconName = 'home-outline';
@@ -40,9 +46,9 @@ function MainAppTabs({ onLogout }) {
           } else if (route.name === 'Guests') {
             iconName = 'people-outline';
           } else if (route.name === 'Lock') {
-            iconName = 'key-outline';
-          } else {
-            iconName = 'ellipsis-horizontal-outline';
+            iconName = 'lock-closed-outline';
+          } else if (route.name === 'More') {
+            iconName = 'ellipsis-horizontal-circle-outline';
           }
 
           return (
@@ -53,9 +59,6 @@ function MainAppTabs({ onLogout }) {
             />
           );
         },
-
-        tabBarActiveTintColor: '#000',
-        tabBarInactiveTintColor: '#888',
       })}
     >
       <Tab.Screen
@@ -80,9 +83,7 @@ function MainAppTabs({ onLogout }) {
 
       <Tab.Screen name="More">
         {() => (
-          <SettingsScreen
-            onLogout={onLogout}
-          />
+          <SettingsScreen onLogout={onLogout} />
         )}
       </Tab.Screen>
     </Tab.Navigator>
@@ -93,50 +94,41 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+
   useEffect(() => {
     let mounted = true;
 
-    const getSession = async () => {
-      try {
-        const {
-          data,
-          error,
-        } = await supabase.auth.getSession();
+    const initializeAuth = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
 
-        if (error) {
-          console.log('Session error:', error);
-
-          if (mounted) {
-            setSession(null);
-          }
-
-          return;
-        }
-
-        if (mounted) {
-          setSession(data.session);
-        }
-      } catch (error) {
-        console.log('Session check failed:', error);
-
-        if (mounted) {
-          setSession(null);
-        }
-      } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+      if (mounted) {
+        setSession(session);
+        setLoading(false);
       }
     };
 
-    getSession();
+    initializeAuth();
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        if (mounted) {
+      (event, session) => {
+        console.log('Supabase Auth Event:', event);
+
+        if (event === 'PASSWORD_RECOVERY') {
+          setIsPasswordRecovery(true);
+        }
+
+        if (event === 'SIGNED_IN') {
           setSession(session);
+        }
+
+        if (event === 'SIGNED_OUT') {
+          setSession(null);
+          setIsPasswordRecovery(false);
         }
       }
     );
@@ -147,69 +139,80 @@ export default function App() {
     };
   }, []);
 
-  const handleLogout = async () => {
-    try {
-      const { error } = await supabase.auth.signOut();
-
-      if (error) {
-        console.log('Logout error:', error);
+  useEffect(() => {
+    const handleDeepLink = async (url) => {
+      if (!url) {
         return;
       }
 
-      setSession(null);
-    } catch (error) {
-      console.log('Logout failed:', error);
-    }
+      console.log('SECURTAP Deep Link:', url);
+
+      if (url.startsWith('securtap://reset-password')) {
+        setIsPasswordRecovery(true);
+      }
+    };
+
+    const checkInitialUrl = async () => {
+      const initialUrl = await Linking.getInitialURL();
+
+      if (initialUrl) {
+        await handleDeepLink(initialUrl);
+      }
+    };
+
+    checkInitialUrl();
+
+    const subscription = Linking.addEventListener(
+      'url',
+      ({ url }) => {
+        handleDeepLink(url);
+      }
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  const handlePasswordUpdated = async () => {
+    setIsPasswordRecovery(false);
+
+    await supabase.auth.signOut();
+
+    setSession(null);
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
   };
 
   if (loading) {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator
-          size="large"
-          color="#000"
-        />
-      </View>
-    );
+    return null;
   }
 
   return (
     <>
+      <NetworkStatus />
+
       <NavigationContainer>
-        {session ? (
+        {isPasswordRecovery ? (
+          <ResetPasswordScreen
+            onPasswordUpdated={handlePasswordUpdated}
+          />
+        ) : session ? (
           <MainAppTabs
             onLogout={handleLogout}
           />
         ) : (
           <LoginScreen
-            onLoginSuccess={setSession}
+            onLoginSuccess={(newSession) => {
+              setSession(newSession);
+            }}
           />
         )}
       </NavigationContainer>
-
-      <NetworkStatus />
     </>
   );
 }
 
-const styles = StyleSheet.create({
-  loading: {
-    flex: 1,
-    backgroundColor: '#fff',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  tabBar: {
-    backgroundColor: '#eeeeee',
-    borderRadius: 30,
-    marginHorizontal: 12,
-    marginBottom: 12,
-    height: 60,
-    position: 'absolute',
-    borderTopWidth: 0,
-    elevation: 3,
-    paddingTop: 5,
-    paddingBottom: 5,
-  },
-});
+const styles = StyleSheet.create({});

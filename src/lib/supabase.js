@@ -23,7 +23,6 @@ export function getSupabaseErrorMessage(error) {
     return 'An unknown error occurred.';
   }
 
-  // Log useful database information during development.
   console.error('Supabase error details:', {
     code: error.code,
     message: error.message,
@@ -32,7 +31,6 @@ export function getSupabaseErrorMessage(error) {
     status: error.status,
   });
 
-  // Auth errors
   if (error.code === 'invalid_credentials') {
     return 'The email or password is incorrect.';
   }
@@ -45,14 +43,11 @@ export function getSupabaseErrorMessage(error) {
     return 'Your session has expired. Please log in again.';
   }
 
-  // Database permission error
   if (error.code === '42501') {
     return 'You do not have permission to access this data.';
   }
 
-  // Common network errors
-  const message =
-    error.message?.toLowerCase() || '';
+  const message = error.message?.toLowerCase() || '';
 
   if (
     message.includes('network') ||
@@ -68,9 +63,7 @@ export function getSupabaseErrorMessage(error) {
     return 'The request took too long. Please try again.';
   }
 
-  if (
-    message.includes('row-level security')
-  ) {
+  if (message.includes('row-level security')) {
     return 'You do not have permission to access this data.';
   }
 
