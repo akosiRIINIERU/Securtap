@@ -211,11 +211,11 @@ export default function App() {
   />
 ) : (
   <LoginScreen
-    onLoginSuccess={(newSession) => {
-      setSession(newSession);
-    }}
-    onSignUp={() => setShowSignUp(true)}
-  />
+  onLoginSuccess={(newSession) => {
+    setSession(newSession);
+  }}
+  onSignUp={() => setShowSignUp(true)}
+/>
 )}
       </NavigationContainer>
     </>
