@@ -18,6 +18,7 @@ import NetworkStatus from './src/components/NetworkStatus';
 import SignUpScreen from './src/screens/SignUpScreen';
 import EntryLogsScreen from './src/screens/EntryLogsScreen';
 
+
 import { ThemeProvider } from './src/context/ThemeContext';
 import { supabase } from './src/lib/supabase';
 
