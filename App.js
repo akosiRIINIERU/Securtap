@@ -1,9 +1,11 @@
+import { StyleSheet, View, ActivityIndicator, Text, TouchableOpacity, } from 'react-native';
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, View, ActivityIndicator } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import LoginScreen from './src/screens/LoginScreen';
 import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
@@ -14,21 +16,81 @@ import LockManagementScreen from './src/screens/LockManagementScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import NetworkStatus from './src/components/NetworkStatus';
 import SignUpScreen from './src/screens/SignUpScreen';
+import EntryLogsScreen from './src/screens/EntryLogsScreen';
 
 import { ThemeProvider } from './src/context/ThemeContext';
 import { supabase } from './src/lib/supabase';
 
 const Tab = createBottomTabNavigator();
 
+
 function MainAppTabs({ onLogout }) {
+  const MoreStack = createNativeStackNavigator();
+
+  function MoreMenuScreen({ navigation }) {
+    return (
+      <View style={{ flex: 1, backgroundColor: '#F5F7FB', padding: 20 }}>
+        <Text style={{ fontSize: 26, fontWeight: '800', color: '#17263C' }}>
+          More
+        </Text>
+        <Text style={{ color: '#788394', marginTop: 6, marginBottom: 22 }}>
+          Security tools and app settings
+        </Text>
+
+        <TouchableOpacity
+          onPress={() => navigation.navigate('EntryLogs')}
+          style={{
+            backgroundColor: '#FFFFFF',
+            padding: 18,
+            borderRadius: 14,
+            flexDirection: 'row',
+            alignItems: 'center',
+            marginBottom: 12,
+          }}
+        >
+          <Ionicons name="document-text-outline" size={24} color="#245DB0" />
+          <View style={{ marginLeft: 14, flex: 1 }}>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: '#17263C' }}>
+              Entry Logs
+            </Text>
+            <Text style={{ fontSize: 12, color: '#788394', marginTop: 4 }}>
+              View establishment access records
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color="#788394" />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => navigation.navigate('Settings')}
+          style={{
+            backgroundColor: '#FFFFFF',
+            padding: 18,
+            borderRadius: 14,
+            flexDirection: 'row',
+            alignItems: 'center',
+          }}
+        >
+          <Ionicons name="settings-outline" size={24} color="#245DB0" />
+          <View style={{ marginLeft: 14, flex: 1 }}>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: '#17263C' }}>
+              Settings
+            </Text>
+            <Text style={{ fontSize: 12, color: '#788394', marginTop: 4 }}>
+              Manage your app preferences
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color="#788394" />
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
-
         tabBarActiveTintColor: '#111111',
         tabBarInactiveTintColor: '#999999',
-
         tabBarStyle: {
           height: 65,
           paddingBottom: 8,
@@ -37,60 +99,43 @@ function MainAppTabs({ onLogout }) {
           borderTopWidth: 1,
           borderTopColor: '#eeeeee',
         },
-
         tabBarIcon: ({ color, size }) => {
           let iconName = 'ellipse-outline';
 
-          if (route.name === 'Home') {
-            iconName = 'home-outline';
-          } else if (route.name === 'Properties') {
-            iconName = 'business-outline';
-          } else if (route.name === 'Guests') {
-            iconName = 'people-outline';
-          } else if (route.name === 'Lock') {
-            iconName = 'lock-closed-outline';
-          } else if (route.name === 'More') {
-            iconName = 'ellipsis-horizontal-circle-outline';
-          }
+          if (route.name === 'Home') iconName = 'home-outline';
+          else if (route.name === 'Properties') iconName = 'business-outline';
+          else if (route.name === 'Guests') iconName = 'people-outline';
+          else if (route.name === 'Lock') iconName = 'lock-closed-outline';
+          else if (route.name === 'More') iconName = 'ellipsis-horizontal-circle-outline';
 
-          return (
-            <Ionicons
-              name={iconName}
-              size={size}
-              color={color}
-            />
-          );
+          return <Ionicons name={iconName} size={size} color={color} />;
         },
       })}
     >
-      <Tab.Screen
-        name="Home"
-        component={DashboardScreen}
-      />
-
-      <Tab.Screen
-        name="Properties"
-        component={PropertiesScreen}
-      />
-
-      <Tab.Screen
-        name="Guests"
-        component={GuestsScreen}
-      />
-
-      <Tab.Screen
-        name="Lock"
-        component={LockManagementScreen}
-      />
+      <Tab.Screen name="Home" component={DashboardScreen} />
+      <Tab.Screen name="Properties" component={PropertiesScreen} />
+      <Tab.Screen name="Guests" component={GuestsScreen} />
+      <Tab.Screen name="Lock" component={LockManagementScreen} />
 
       <Tab.Screen name="More">
         {() => (
-          <SettingsScreen onLogout={onLogout} />
+          <MoreStack.Navigator screenOptions={{ headerShown: false }}>
+            <MoreStack.Screen name="MoreMenu">
+              {(props) => <MoreMenuScreen {...props} />}
+            </MoreStack.Screen>
+
+            <MoreStack.Screen name="EntryLogs" component={EntryLogsScreen} />
+
+            <MoreStack.Screen name="Settings">
+              {() => <SettingsScreen onLogout={onLogout} />}
+            </MoreStack.Screen>
+          </MoreStack.Navigator>
         )}
       </Tab.Screen>
     </Tab.Navigator>
   );
 }
+
 
 export default function App() {
   const [session, setSession] = useState(null);
