@@ -1,10 +1,11 @@
-import { StyleSheet, View, ActivityIndicator, Text, TouchableOpacity, } from 'react-native';
+import { StyleSheet, View, ActivityIndicator, Text, TouchableOpacity } from 'react-native';
 import React, { useEffect, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+
 import OtpVerificationScreen from './src/screens/OtpVerificationScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
@@ -16,13 +17,11 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import NetworkStatus from './src/components/NetworkStatus';
 import SignUpScreen from './src/screens/SignUpScreen';
 import EntryLogsScreen from './src/screens/EntryLogsScreen';
-
-
 import { ThemeProvider } from './src/context/ThemeContext';
 import { supabase } from './src/lib/supabase';
+import { APP_NAME } from './src/constants';
 
 const Tab = createBottomTabNavigator();
-
 
 function MainAppTabs({ onLogout }) {
   const MoreStack = createNativeStackNavigator();
@@ -34,27 +33,20 @@ function MainAppTabs({ onLogout }) {
           More
         </Text>
         <Text style={{ color: '#788394', marginTop: 6, marginBottom: 22 }}>
-          Security tools and app settings
+          Logs and account settings
         </Text>
 
         <TouchableOpacity
           onPress={() => navigation.navigate('EntryLogs')}
-          style={{
-            backgroundColor: '#FFFFFF',
-            padding: 18,
-            borderRadius: 14,
-            flexDirection: 'row',
-            alignItems: 'center',
-            marginBottom: 12,
-          }}
+          style={menuCardStyle}
         >
-          <Ionicons name="document-text-outline" size={24} color="#245DB0" />
+          <Ionicons name="document-text-outline" size={24} color="#111111" />
           <View style={{ marginLeft: 14, flex: 1 }}>
             <Text style={{ fontSize: 16, fontWeight: '700', color: '#17263C' }}>
               Entry Logs
             </Text>
             <Text style={{ fontSize: 12, color: '#788394', marginTop: 4 }}>
-              View establishment access records
+              View door access records
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#788394" />
@@ -62,21 +54,15 @@ function MainAppTabs({ onLogout }) {
 
         <TouchableOpacity
           onPress={() => navigation.navigate('Settings')}
-          style={{
-            backgroundColor: '#FFFFFF',
-            padding: 18,
-            borderRadius: 14,
-            flexDirection: 'row',
-            alignItems: 'center',
-          }}
+          style={menuCardStyle}
         >
-          <Ionicons name="settings-outline" size={24} color="#245DB0" />
+          <Ionicons name="settings-outline" size={24} color="#111111" />
           <View style={{ marginLeft: 14, flex: 1 }}>
             <Text style={{ fontSize: 16, fontWeight: '700', color: '#17263C' }}>
               Settings
             </Text>
             <Text style={{ fontSize: 12, color: '#788394', marginTop: 4 }}>
-              Manage your app preferences
+              Profile, security, and preferences
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#788394" />
@@ -116,16 +102,11 @@ function MainAppTabs({ onLogout }) {
       <Tab.Screen name="Properties" component={PropertiesScreen} />
       <Tab.Screen name="Guests" component={GuestsScreen} />
       <Tab.Screen name="Lock" component={LockManagementScreen} />
-
       <Tab.Screen name="More">
         {() => (
           <MoreStack.Navigator screenOptions={{ headerShown: false }}>
-            <MoreStack.Screen name="MoreMenu">
-              {(props) => <MoreMenuScreen {...props} />}
-            </MoreStack.Screen>
-
+            <MoreStack.Screen name="MoreMenu" component={MoreMenuScreen} />
             <MoreStack.Screen name="EntryLogs" component={EntryLogsScreen} />
-
             <MoreStack.Screen name="Settings">
               {() => <SettingsScreen onLogout={onLogout} />}
             </MoreStack.Screen>
@@ -136,27 +117,30 @@ function MainAppTabs({ onLogout }) {
   );
 }
 
+const menuCardStyle = {
+  backgroundColor: '#FFFFFF',
+  padding: 18,
+  borderRadius: 14,
+  flexDirection: 'row',
+  alignItems: 'center',
+  marginBottom: 12,
+};
 
 export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
-const [showOtpVerification, setShowOtpVerification] = useState(false);
-const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
+  const [showOtpVerification, setShowOtpVerification] = useState(false);
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   const [showSignUp, setShowSignUp] = useState(false);
 
-  /*
-   * -----------------------------------------
-   * SUPABASE AUTH INITIALIZATION
-   * -----------------------------------------
-   */
   useEffect(() => {
     let mounted = true;
 
     const initializeAuth = async () => {
       try {
         const {
-          data: { session },
+          data: { session: currentSession },
           error,
         } = await supabase.auth.getSession();
 
@@ -165,7 +149,7 @@ const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
         }
 
         if (mounted) {
-          setSession(session);
+          setSession(currentSession);
           setLoading(false);
         }
       } catch (error) {
@@ -182,36 +166,38 @@ const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(
-      (event, newSession) => {
-        console.log('Supabase Auth Event:', event);
+    } = supabase.auth.onAuthStateChange((event, newSession) => {
+      if (!mounted) {
+        return;
+      }
 
-        if (!mounted) {
-          return;
-        }
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
+        setSession(newSession);
+        return;
+      }
 
-        if (event === 'PASSWORD_RECOVERY') {
-          setIsPasswordRecovery(true);
-          setSession(newSession);
-          return;
-        }
-
-        if (
-          event === 'SIGNED_IN' ||
-          event === 'TOKEN_REFRESHED' ||
-          event === 'INITIAL_SESSION'
-        ) {
-          setSession(newSession);
-          return;
-        }
-
-        if (event === 'SIGNED_OUT') {
-          setSession(null);
-          setIsPasswordRecovery(false);
+      if (
+        event === 'SIGNED_IN' ||
+        event === 'TOKEN_REFRESHED' ||
+        event === 'INITIAL_SESSION' ||
+        event === 'USER_UPDATED'
+      ) {
+        setSession(newSession);
+        if (newSession) {
+          setShowOtpVerification(false);
           setShowSignUp(false);
         }
+        return;
       }
-    );
+
+      if (event === 'SIGNED_OUT') {
+        setSession(null);
+        setIsPasswordRecovery(false);
+        setShowSignUp(false);
+        setShowOtpVerification(false);
+      }
+    });
 
     return () => {
       mounted = false;
@@ -219,20 +205,16 @@ const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
     };
   }, []);
 
-  /*
-   * -----------------------------------------
-   * PASSWORD RESET DEEP LINK
-   * -----------------------------------------
-   */
   useEffect(() => {
     const handleDeepLink = async (url) => {
       if (!url) {
         return;
       }
 
-      console.log('SECURTAP Deep Link:', url);
-
-      if (url.startsWith('securtap://reset-password')) {
+      if (
+        url.includes('reset-password') ||
+        url.includes('type=recovery')
+      ) {
         setIsPasswordRecovery(true);
       }
     };
@@ -240,7 +222,6 @@ const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
     const checkInitialUrl = async () => {
       try {
         const initialUrl = await Linking.getInitialURL();
-
         if (initialUrl) {
           await handleDeepLink(initialUrl);
         }
@@ -251,23 +232,15 @@ const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
 
     checkInitialUrl();
 
-    const subscription = Linking.addEventListener(
-      'url',
-      ({ url }) => {
-        handleDeepLink(url);
-      }
-    );
+    const subscription = Linking.addEventListener('url', ({ url }) => {
+      handleDeepLink(url);
+    });
 
     return () => {
       subscription.remove();
     };
   }, []);
 
-  /*
-   * -----------------------------------------
-   * AFTER PASSWORD RESET
-   * -----------------------------------------
-   */
   const handlePasswordUpdated = async () => {
     setIsPasswordRecovery(false);
 
@@ -280,11 +253,6 @@ const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
     setSession(null);
   };
 
-  /*
-   * -----------------------------------------
-   * LOGOUT
-   * -----------------------------------------
-   */
   const handleLogout = async () => {
     try {
       const { error } = await supabase.auth.signOut();
@@ -297,78 +265,66 @@ const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
     }
   };
 
-  /*
-   * -----------------------------------------
-   * LOADING
-   * -----------------------------------------
-   */
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator
-          size="large"
-          color="#111111"
-        />
+        <ActivityIndicator size="large" color="#111111" />
+        <Text style={styles.loadingText}>{APP_NAME}</Text>
       </View>
     );
   }
 
-  /*
-   * -----------------------------------------
-   * APP
-   * -----------------------------------------
-   */
+  let content = (
+    <LoginScreen
+      onLoginSuccess={(newSession) => {
+        setSession(newSession);
+      }}
+      onSignUp={() => {
+        setShowSignUp(true);
+      }}
+    />
+  );
+
+  if (isPasswordRecovery) {
+    content = (
+      <ResetPasswordScreen onPasswordUpdated={handlePasswordUpdated} />
+    );
+  } else if (session) {
+    content = <MainAppTabs onLogout={handleLogout} />;
+  } else if (showOtpVerification) {
+    content = (
+      <OtpVerificationScreen
+        email={pendingVerificationEmail}
+        onVerified={() => {
+          setShowOtpVerification(false);
+          setShowSignUp(false);
+        }}
+        onBackToSignUp={() => {
+          setShowOtpVerification(false);
+          setShowSignUp(true);
+        }}
+      />
+    );
+  } else if (showSignUp) {
+    content = (
+      <SignUpScreen
+        onBackToLogin={() => setShowSignUp(false)}
+        onOtpSent={(email) => {
+          setPendingVerificationEmail(email);
+          setShowOtpVerification(true);
+          setShowSignUp(false);
+        }}
+      />
+    );
+  }
+
   return (
     <ThemeProvider>
       <NetworkStatus />
-
-      <NavigationContainer>
-        {isPasswordRecovery ? (
-          <ResetPasswordScreen
-            onPasswordUpdated={handlePasswordUpdated}
-          />
-        ) : session ? (
-          <MainAppTabs
-            onLogout={handleLogout}
-          />
-        ) : showSignUp ? (
-          <SignUpScreen
-  onBackToLogin={() => setShowSignUp(false)}
-  onOtpSent={(email) => {
-    setPendingVerificationEmail(email);
-    setShowOtpVerification(true);
-    setShowSignUp(false);
-  }}
-/>
-        ) : (
-          <LoginScreen
-            onLoginSuccess={(newSession) => {
-              setSession(newSession);
-            }}
-            onSignUp={() => {
-              setShowSignUp(true);
-            }}
-          />
-        )}
-      </NavigationContainer>
+      <NavigationContainer>{content}</NavigationContainer>
     </ThemeProvider>
   );
-  {showOtpVerification && (
-  <OtpVerificationScreen
-    email={pendingVerificationEmail}
-    onVerified={() => {
-      setShowOtpVerification(false);
-      setShowSignUp(false);
-    }}
-    onBackToSignUp={() => {
-      setShowOtpVerification(false);
-      setShowSignUp(true);
-    }}
-  />
-)}
 }
-
-
 
 const styles = StyleSheet.create({
   loadingContainer: {
@@ -376,5 +332,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#ffffff',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontWeight: '800',
+    letterSpacing: 2,
+    color: '#111111',
   },
 });

@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import {
   StyleSheet,
@@ -12,8 +11,8 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-
-
+import { supabase, getSupabaseErrorMessage } from '../lib/supabase';
+import { APP_NAME, AUTH_CONFIRM_URL } from '../constants';
 
 export default function SignUpScreen({
   onBackToLogin,
@@ -66,10 +65,10 @@ export default function SignUpScreen({
       return;
     }
 
-    if (password.length < 6) {
+    if (password.length < 8) {
       Alert.alert(
         'Password Too Short',
-        'Your password must contain at least 6 characters.'
+        'Your password must contain at least 8 characters.'
       );
       return;
     }
@@ -94,15 +93,16 @@ export default function SignUpScreen({
 
     try {
       const { data, error } = await supabase.auth.signUp({
-  email: cleanEmail,
-  password,
-  options: {
-    data: {
-      full_name: cleanName
-    },
-    emailRedirectTo: 'https://YOUR-GITHUB-USERNAME.github.io/securtap-confirmation/'
-  }
-});
+        email: cleanEmail,
+        password,
+        options: {
+          data: {
+            full_name: cleanName,
+          },
+          emailRedirectTo: AUTH_CONFIRM_URL,
+        },
+      });
+
       if (error) {
         console.error('Sign up error:', error);
 
@@ -115,19 +115,12 @@ export default function SignUpScreen({
 
       if (data?.user && !data?.session) {
         onOtpSent(cleanEmail);
-      }
-
-      if (data?.session) {
-        Alert.alert(
-          'Email Confirmation Required',
-          'Supabase returned an active session. Check your email confirmation settings to ensure new accounts must verify their email.'
-        );
         return;
       }
 
       Alert.alert(
-        'Registration Pending',
-        'Please check your email and try signing in after verification.'
+        'Check Your Email',
+        `Open the confirmation link we sent to ${cleanEmail} to finish creating your ${APP_NAME} account.`
       );
     } catch (error) {
       console.error('Unexpected sign up error:', error);
@@ -155,7 +148,7 @@ export default function SignUpScreen({
           </View>
 
           <Text style={styles.brandTitle}>
-            SECURTAP
+            {APP_NAME.toUpperCase()}
           </Text>
 
           <Text style={styles.title}>
@@ -163,7 +156,7 @@ export default function SignUpScreen({
           </Text>
 
           <Text style={styles.subtitle}>
-            Create your SECURTAP admin account
+            {`Create your ${APP_NAME} admin account`}
           </Text>
 
           {/* Full Name */}
@@ -263,7 +256,7 @@ export default function SignUpScreen({
           </View>
 
           <Text style={styles.requirement}>
-            Password must contain at least 6 characters.
+            Password must contain at least 8 characters.
           </Text>
 
           {/* Create Account */}
@@ -293,9 +286,7 @@ export default function SignUpScreen({
             />
 
             <Text style={styles.infoText}>
-              A verification code will be sent to your Gmail.
-              Verify your email before signing in to SECURTAP.
-              Your Gmail will also be used for password recovery.
+              {`A confirmation email will open on the ${APP_NAME} GitHub verification page. You can also enter the 6-digit code in the app.`}
             </Text>
           </View>
 

@@ -15,6 +15,7 @@ import {
   supabase,
   getSupabaseErrorMessage,
 } from '../lib/supabase';
+import { APP_NAME, AUTH_RESET_URL } from '../constants';
 
 export default function LoginScreen({
   onLoginSuccess,
@@ -38,7 +39,7 @@ export default function LoginScreen({
     if (!cleanEmail || !password) {
       Alert.alert(
         'Missing Information',
-        'Please enter your Gmail and password.'
+        'Please enter your email and password.'
       );
       return;
     }
@@ -108,8 +109,7 @@ const handleForgotPassword = async () => {
     const { error } = await supabase.auth.resetPasswordForEmail(
       cleanEmail,
       {
-        redirectTo:
-          'https://akosiriinieru.github.io/SignUpVerification/reset-password.html',
+        redirectTo: AUTH_RESET_URL,
       }
     );
 
@@ -125,7 +125,7 @@ const handleForgotPassword = async () => {
 
     Alert.alert(
       'Reset Email Requested',
-      `If an account exists for ${cleanEmail}, check your inbox for the password reset email. Open the link on the same device or browser where you intend to reset your password.`
+      `If an account exists for ${cleanEmail}, open the reset link in your email. It opens the ${APP_NAME} password page on GitHub so you can set a new password.`
     );
   } catch (error) {
     console.error('Unexpected password recovery error:', error);
@@ -155,7 +155,7 @@ const handleForgotPassword = async () => {
 
         {/* BRAND */}
         <Text style={styles.brandTitle}>
-          SECURTAP
+          {APP_NAME.toUpperCase()}
         </Text>
 
         <Text style={styles.welcomeText}>
@@ -176,7 +176,7 @@ const handleForgotPassword = async () => {
 
           <TextInput
             style={styles.input}
-            placeholder="Gmail address"
+            placeholder="Email address"
             placeholderTextColor="#888"
             value={email}
             onChangeText={setEmail}
@@ -286,8 +286,7 @@ const handleForgotPassword = async () => {
           />
 
           <Text style={styles.infoText}>
-            Your Gmail address is used for account
-            verification and password recovery.
+            {`Sign-up and password reset links open the ${APP_NAME} GitHub verification pages.`}
           </Text>
         </View>
 

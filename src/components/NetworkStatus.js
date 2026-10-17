@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
-  AppState,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { APP_NAME } from '../constants';
 import NetInfo from '@react-native-community/netinfo';
 
 export default function NetworkStatus() {
@@ -30,7 +30,7 @@ export default function NetworkStatus() {
           if (!connected && previousConnection.current) {
             Alert.alert(
               'No Internet Connection',
-              'SECURTAP cannot connect to the server right now. Please check your Wi-Fi or mobile data.'
+              `${APP_NAME} cannot connect to the server right now. Please check your Wi-Fi or mobile data.`
             );
 
             setShowBanner(true);
@@ -66,7 +66,7 @@ export default function NetworkStatus() {
         if (!connected && previousConnection.current) {
           Alert.alert(
             'No Internet Connection',
-            'SECURTAP cannot connect to the server right now. Please check your Wi-Fi or mobile data.'
+            `${APP_NAME} cannot connect to the server right now. Please check your Wi-Fi or mobile data.`
           );
 
           setShowBanner(true);

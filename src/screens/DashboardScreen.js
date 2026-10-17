@@ -8,7 +8,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 
@@ -18,6 +17,7 @@ import {
   supabase,
   getSupabaseErrorMessage,
 } from '../lib/supabase';
+import { APP_NAME } from '../constants';
 
 export default function DashboardScreen() {
   const [properties, setProperties] = useState([]);
@@ -204,25 +204,13 @@ export default function DashboardScreen() {
         <View style={styles.header}>
           <View>
             <Text style={styles.brandTitle}>
-              SECURTAP
+              {APP_NAME.toUpperCase()}
             </Text>
 
             <Text style={styles.welcomeSub}>
-              Welcome, Admin!
+              Property lock overview
             </Text>
           </View>
-
-          <TouchableOpacity
-            style={styles.notificationButton}
-          >
-            <Ionicons
-              name="notifications-outline"
-              size={24}
-              color="#111"
-            />
-
-            <View style={styles.notificationDot} />
-          </TouchableOpacity>
         </View>
 
         <Text style={styles.dateText}>
@@ -298,12 +286,6 @@ export default function DashboardScreen() {
             <Text style={styles.sectionTitle}>
               Recent Activities
             </Text>
-
-            <TouchableOpacity>
-              <Text style={styles.viewAll}>
-                View All
-              </Text>
-            </TouchableOpacity>
           </View>
 
           {activities.length === 0 ? (
@@ -353,12 +335,6 @@ export default function DashboardScreen() {
             <Text style={styles.sectionTitle}>
               Upcoming Check-ins
             </Text>
-
-            <TouchableOpacity>
-              <Text style={styles.viewAll}>
-                View All
-              </Text>
-            </TouchableOpacity>
           </View>
 
           {guests.length === 0 ? (
@@ -383,17 +359,21 @@ export default function DashboardScreen() {
 
                 <View style={styles.guestInfo}>
                   <Text style={styles.guestName}>
-                    {guest.name || 'Guest'}
+                    {[guest.first_name, guest.last_name]
+                      .filter(Boolean)
+                      .join(' ') || guest.name || 'Guest'}
                   </Text>
 
                   <Text style={styles.guestProperty}>
-                    {guest.property_id ||
-                      'Property'}
+                    {properties.find((item) => item.id === guest.property_id)
+                      ?.name || 'Property'}
                   </Text>
 
                   <Text style={styles.guestDate}>
                     Check-in:{' '}
-                    {guest.check_in || 'Not set'}
+                    {guest.check_in
+                      ? new Date(guest.check_in).toLocaleDateString()
+                      : 'Not set'}
                   </Text>
                 </View>
 

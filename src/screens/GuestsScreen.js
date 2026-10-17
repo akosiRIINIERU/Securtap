@@ -844,6 +844,33 @@ export default function GuestsScreen() {
     }
   }
 
+  async function performCheckIn(guest) {
+    try {
+      const now = new Date().toISOString();
+
+      const { data, error } = await supabase
+        .from('guests')
+        .update({
+          status: 'checked_in',
+          check_in_date: now,
+          updated_at: now,
+        })
+        .eq('id', guest.id)
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      setGuests((current) =>
+        current.map((item) => (item.id === guest.id ? data : item))
+      );
+    } catch (error) {
+      Alert.alert('Check-in Failed', getSupabaseErrorMessage(error));
+    }
+  }
+
   function checkoutGuest(guest) {
     Alert.alert(
       'Check Out Guest',
@@ -1003,9 +1030,8 @@ export default function GuestsScreen() {
         item.deletion_scheduled_at
       );
 
-    const isReserved =
-      item.status ===
-      'reserved';
+    const isReserved = item.status === 'reserved';
+    const isCheckedOut = item.status === 'checked_out';
 
     return (
       <View
@@ -1055,22 +1081,28 @@ export default function GuestsScreen() {
               <View
                 style={[
                   styles.statusBadge,
-                  isReserved
-                    ? styles.reservedBadge
-                    : styles.checkedBadge,
+                  isCheckedOut
+                    ? styles.paymentBadge
+                    : isReserved
+                      ? styles.reservedBadge
+                      : styles.checkedBadge,
                 ]}
               >
                 <Text
                   style={[
                     styles.statusText,
-                    isReserved
-                      ? styles.reservedText
-                      : styles.checkedText,
+                    isCheckedOut
+                      ? styles.paymentText
+                      : isReserved
+                        ? styles.reservedText
+                        : styles.checkedText,
                   ]}
                 >
-                  {isReserved
-                    ? 'RESERVED'
-                    : 'CHECKED IN'}
+                  {isCheckedOut
+                    ? 'CHECKED OUT'
+                    : isReserved
+                      ? 'RESERVED'
+                      : 'CHECKED IN'}
                 </Text>
               </View>
 
@@ -1137,31 +1169,31 @@ export default function GuestsScreen() {
           />
         </View>
 
-        {item.status !==
-        'checked_out' ? (
+        {item.status === 'reserved' ? (
           <Pressable
-            style={
-              styles.checkoutButton
-            }
-            onPress={() =>
-              checkoutGuest(item)
-            }
+            style={styles.checkoutButton}
+            onPress={() => performCheckIn(item)}
+          >
+            <Ionicons
+              name="log-in-outline"
+              size={18}
+              color={colors.primary}
+            />
+            <Text style={styles.checkoutText}>Check In</Text>
+          </Pressable>
+        ) : null}
+
+        {item.status === 'checked_in' ? (
+          <Pressable
+            style={styles.checkoutButton}
+            onPress={() => checkoutGuest(item)}
           >
             <Ionicons
               name="log-out-outline"
               size={18}
-              color={
-                colors.primary
-              }
+              color={colors.primary}
             />
-
-            <Text
-              style={
-                styles.checkoutText
-              }
-            >
-              Check Out
-            </Text>
+            <Text style={styles.checkoutText}>Check Out</Text>
           </Pressable>
         ) : null}
 

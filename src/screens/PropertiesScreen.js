@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { supabase, getSupabaseErrorMessage } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
+import { APP_NAME } from '../constants';
 
 export default function PropertiesScreen({ navigation }) {
   const { colors } = useTheme();
@@ -182,7 +183,7 @@ export default function PropertiesScreen({ navigation }) {
             { color: colors.text },
           ]}
         >
-          SECURTAP
+            {APP_NAME.toUpperCase()}
         </Text>
 
         <Text

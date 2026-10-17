@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { supabase, getSupabaseErrorMessage } from '../lib/supabase';
+import { APP_NAME } from '../constants';
 
 export default function ResetPasswordScreen({ onPasswordUpdated }) {
   const [password, setPassword] = useState('');
@@ -25,10 +26,10 @@ export default function ResetPasswordScreen({ onPasswordUpdated }) {
       return;
     }
 
-    if (password.length < 6) {
+    if (password.length < 8) {
       Alert.alert(
         'Password Too Short',
-        'Your password must contain at least 6 characters.'
+        'Your password must contain at least 8 characters.'
       );
       return;
     }
@@ -58,7 +59,7 @@ export default function ResetPasswordScreen({ onPasswordUpdated }) {
 
       Alert.alert(
         'Password Updated',
-        'Your SECURTAP password has been changed successfully.',
+        `Your ${APP_NAME} password has been changed successfully.`,
         [
           {
             text: 'Continue',
@@ -93,7 +94,7 @@ export default function ResetPasswordScreen({ onPasswordUpdated }) {
         </Text>
 
         <Text style={styles.description}>
-          Create a new password for your SECURTAP admin account.
+          {`Create a new password for your ${APP_NAME} admin account.`}
         </Text>
 
         <TextInput
@@ -119,7 +120,7 @@ export default function ResetPasswordScreen({ onPasswordUpdated }) {
         />
 
         <Text style={styles.requirement}>
-          Password must contain at least 6 characters.
+          Password must contain at least 8 characters.
         </Text>
 
         <TouchableOpacity

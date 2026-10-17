@@ -12,20 +12,30 @@ const LIGHT = {
   background: '#ffffff',
   card: '#f3f3f3',
   input: '#ffffff',
+  inputBackground: '#ffffff',
   text: '#111111',
   secondaryText: '#777777',
+  secondaryBackground: '#f3f3f3',
   border: '#dddddd',
   tabBar: '#ffffff',
+  primary: '#111111',
+  muted: '#888888',
+  danger: '#c62828',
 };
 
 const DARK = {
   background: '#101010',
   card: '#1c1c1c',
   input: '#242424',
+  inputBackground: '#242424',
   text: '#ffffff',
   secondaryText: '#aaaaaa',
+  secondaryBackground: '#171717',
   border: '#333333',
   tabBar: '#171717',
+  primary: '#ffffff',
+  muted: '#888888',
+  danger: '#ef5350',
 };
 
 export function ThemeProvider({ children }) {

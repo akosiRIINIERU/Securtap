@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../lib/supabase';
+import { APP_NAME } from '../constants';
 
 const FILTERS = ['All', 'Granted', 'Denied'];
 
@@ -292,7 +293,7 @@ export default function EntryLogsScreen() {
 
       <View style={styles.header}>
         <View>
-          <Text style={styles.eyebrow}>SECURTAP SECURITY</Text>
+          <Text style={styles.eyebrow}>{APP_NAME.toUpperCase()} SECURITY</Text>
           <Text style={styles.title}>Entry Logs</Text>
           <Text style={styles.subtitle}>
             Monitor access to your establishment

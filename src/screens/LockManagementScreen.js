@@ -17,27 +17,22 @@ import {
   supabase,
   getSupabaseErrorMessage,
 } from '../lib/supabase';
-
+import { invokeTuyaLock, summarizeLockStatus } from '../lib/tuya';
 import { useTheme } from '../context/ThemeContext';
+import { APP_NAME } from '../constants';
 
 export default function LockManagementScreen() {
   const { colors } = useTheme();
 
   const [locks, setLocks] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  const [showAddLock, setShowAddLock] =
-    useState(false);
-
+  const [showAddLock, setShowAddLock] = useState(false);
   const [lockName, setLockName] = useState('');
   const [deviceId, setDeviceId] = useState('');
-  const [propertyId, setPropertyId] =
-    useState('');
-
-  const [properties, setProperties] =
-    useState([]);
-
+  const [propertyId, setPropertyId] = useState('');
+  const [properties, setProperties] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [busyLockId, setBusyLockId] = useState('');
 
   const loadLocks = async () => {
     try {
@@ -54,9 +49,7 @@ export default function LockManagementScreen() {
       const { data, error } = await supabase
         .from('smart_locks')
         .select('*')
-        .order('created_at', {
-          ascending: false,
-        });
+        .order('created_at', { ascending: false });
 
       if (error) {
         throw error;
@@ -97,10 +90,7 @@ export default function LockManagementScreen() {
 
       setProperties(data || []);
     } catch (error) {
-      console.error(
-        'Load lock properties error:',
-        error
-      );
+      console.error('Load lock properties error:', error);
     }
   };
 
@@ -108,7 +98,6 @@ export default function LockManagementScreen() {
     loadLocks();
     loadProperties();
 
-    // Again: .on() BEFORE .subscribe()
     const channel = supabase
       .channel('smart-locks-realtime')
       .on(
@@ -122,45 +111,102 @@ export default function LockManagementScreen() {
           loadLocks();
         }
       )
-      .subscribe((status, error) => {
-        console.log(
-          'Smart locks realtime:',
-          status
-        );
-
-        if (
-          status === 'CHANNEL_ERROR' ||
-          status === 'TIMED_OUT'
-        ) {
-          console.error(
-            'Smart locks realtime error:',
-            error
-          );
-        }
-      });
+      .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
   }, []);
 
+  const persistLockStatus = async (lock, result) => {
+    const summary = summarizeLockStatus(result?.status);
+    const nextStatus = result?.online === false
+      ? 'offline'
+      : summary.locked === true
+        ? 'locked'
+        : summary.locked === false
+          ? 'unlocked'
+          : 'online';
+
+    await supabase
+      .from('smart_locks')
+      .update({
+        status: nextStatus,
+      })
+      .eq('id', lock.id);
+
+    setLocks((current) =>
+      current.map((item) =>
+        item.id === lock.id
+          ? {
+              ...item,
+              status: nextStatus,
+              last_seen_at: result?.checkedAt,
+              live: summary,
+              online: result?.online,
+            }
+          : item
+      )
+    );
+  };
+
+  const connectLock = async (lock, action = 'status') => {
+    if (!lock.device_id) {
+      Alert.alert('Missing Device ID', 'This lock has no Tuya device ID.');
+      return;
+    }
+
+    setBusyLockId(lock.id);
+
+    try {
+      const result = await invokeTuyaLock({
+        action,
+        deviceId: lock.device_id,
+      });
+
+      await persistLockStatus(lock, result);
+
+      if (action === 'status') {
+        Alert.alert(
+          'Lock Connected',
+          `${lock.name || 'Smart lock'} is reachable on Tuya.`
+        );
+      }
+    } catch (error) {
+      Alert.alert(
+        action === 'status' ? 'Connection Failed' : 'Command Failed',
+        error.message || getSupabaseErrorMessage(error)
+      );
+    } finally {
+      setBusyLockId('');
+    }
+  };
+
+  const confirmCommand = (lock, action) => {
+    Alert.alert(
+      action === 'unlock' ? 'Unlock Door?' : 'Lock Door?',
+      `${action === 'unlock' ? 'Unlock' : 'Lock'} ${lock.name || 'this smart lock'}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: action === 'unlock' ? 'Unlock' : 'Lock',
+          onPress: () => connectLock(lock, action),
+        },
+      ]
+    );
+  };
+
   const registerLock = async () => {
     const cleanName = lockName.trim();
     const cleanDeviceId = deviceId.trim();
 
     if (!cleanName) {
-      Alert.alert(
-        'Missing Lock Name',
-        'Enter a name for the smart lock.'
-      );
+      Alert.alert('Missing Lock Name', 'Enter a name for the smart lock.');
       return;
     }
 
     if (!cleanDeviceId) {
-      Alert.alert(
-        'Missing Device ID',
-        'Enter the Tuya device ID.'
-      );
+      Alert.alert('Missing Device ID', 'Enter the Tuya device ID.');
       return;
     }
 
@@ -180,23 +226,11 @@ export default function LockManagementScreen() {
       } = await supabase.auth.getUser();
 
       if (!user) {
-        Alert.alert(
-          'Session Expired',
-          'Please log in again.'
-        );
+        Alert.alert('Session Expired', 'Please log in again.');
         return;
       }
 
-      /*
-       * This stores the Tuya device reference in
-       * SECURTAP.
-       *
-       * The actual Tuya API call should happen
-       * through a Supabase Edge Function so that
-       * the Tuya Access Secret never reaches the
-       * Android application.
-       */
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('smart_locks')
         .insert({
           property_id: propertyId,
@@ -204,7 +238,9 @@ export default function LockManagementScreen() {
           device_id: cleanDeviceId,
           provider: 'tuya',
           status: 'registered',
-        });
+        })
+        .select()
+        .single();
 
       if (error) {
         throw error;
@@ -214,18 +250,28 @@ export default function LockManagementScreen() {
       setDeviceId('');
       setPropertyId('');
       setShowAddLock(false);
-
       await loadLocks();
 
-      Alert.alert(
-        'Smart Lock Registered',
-        `${cleanName} has been added to SECURTAP.`
-      );
+      try {
+        const result = await invokeTuyaLock({
+          action: 'status',
+          deviceId: cleanDeviceId,
+        });
+
+        await persistLockStatus(data, result);
+
+        Alert.alert(
+          'Smart Lock Connected',
+          `${cleanName} is now linked to ${APP_NAME} and reachable on Tuya.`
+        );
+      } catch (connectError) {
+        Alert.alert(
+          'Saved, Connection Pending',
+          `${cleanName} was saved, but Tuya did not respond yet.\n\n${connectError.message}`
+        );
+      }
     } catch (error) {
-      console.error(
-        'Register smart lock error:',
-        error
-      );
+      console.error('Register smart lock error:', error);
 
       Alert.alert(
         'Unable to Register Lock',
@@ -238,31 +284,18 @@ export default function LockManagementScreen() {
 
   return (
     <SafeAreaView
-      style={[
-        styles.container,
-        { backgroundColor: colors.background },
-      ]}
+      style={[styles.container, { backgroundColor: colors.background }]}
     >
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <Text
-          style={[
-            styles.title,
-            { color: colors.text },
-          ]}
-        >
-          Lock Management
+        <Text style={[styles.title, { color: colors.text }]}>
+          Smart Lock
         </Text>
 
-        <Text
-          style={[
-            styles.subtitle,
-            { color: colors.secondaryText },
-          ]}
-        >
-          Manage your Tuya smart locks
+        <Text style={[styles.subtitle, { color: colors.secondaryText }]}>
+          Connect your Tuya lock to {APP_NAME}
         </Text>
 
         <TouchableOpacity
@@ -272,15 +305,8 @@ export default function LockManagementScreen() {
             setShowAddLock(true);
           }}
         >
-          <Ionicons
-            name="add-circle-outline"
-            size={21}
-            color="#fff"
-          />
-
-          <Text style={styles.addButtonText}>
-            Add Tuya Smart Lock
-          </Text>
+          <Ionicons name="add-circle-outline" size={21} color="#fff" />
+          <Text style={styles.addButtonText}>Connect Tuya Smart Lock</Text>
         </TouchableOpacity>
 
         {loading ? (
@@ -290,89 +316,92 @@ export default function LockManagementScreen() {
             style={{ marginTop: 35 }}
           />
         ) : locks.length === 0 ? (
-          <View
-            style={[
-              styles.emptyCard,
-              { backgroundColor: colors.card },
-            ]}
-          >
+          <View style={[styles.emptyCard, { backgroundColor: colors.card }]}>
             <Ionicons
               name="lock-closed-outline"
               size={48}
               color={colors.secondaryText}
             />
-
-            <Text
-              style={[
-                styles.emptyTitle,
-                { color: colors.text },
-              ]}
-            >
-              No Smart Locks
+            <Text style={[styles.emptyTitle, { color: colors.text }]}>
+              No Connected Lock
             </Text>
-
-            <Text
-              style={[
-                styles.emptyText,
-                { color: colors.secondaryText },
-              ]}
-            >
-              Add a Tuya smart lock to begin
-              managing your locks.
+            <Text style={[styles.emptyText, { color: colors.secondaryText }]}>
+              Add your premade Tuya smart lock using its device ID, then
+              refresh status from this screen.
             </Text>
           </View>
         ) : (
-          locks.map((lock) => (
-            <View
-              key={lock.id}
-              style={[
-                styles.lockCard,
-                { backgroundColor: colors.card },
-              ]}
-            >
-              <View style={styles.lockIcon}>
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={24}
-                  color="#111"
-                />
+          locks.map((lock) => {
+            const busy = busyLockId === lock.id;
+            const property = properties.find(
+              (item) => item.id === lock.property_id
+            );
+
+            return (
+              <View
+                key={lock.id}
+                style={[styles.lockCard, { backgroundColor: colors.card }]}
+              >
+                <View style={styles.lockTop}>
+                  <View style={styles.lockIcon}>
+                    <Ionicons
+                      name={
+                        lock.status === 'unlocked'
+                          ? 'lock-open-outline'
+                          : 'lock-closed-outline'
+                      }
+                      size={24}
+                      color="#111"
+                    />
+                  </View>
+
+                  <View style={styles.lockInfo}>
+                    <Text style={[styles.lockName, { color: colors.text }]}>
+                      {lock.name || 'Unnamed Lock'}
+                    </Text>
+                    <Text style={[styles.lockDevice, { color: colors.secondaryText }]}>
+                      {property?.name ? `${property.name} · ` : ''}
+                      {lock.device_id}
+                    </Text>
+                    <Text style={[styles.lockStatus, { color: colors.secondaryText }]}>
+                      Status: {lock.status || 'Unknown'}
+                      {lock.online === false ? ' · Offline' : ''}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.actionRow}>
+                  <TouchableOpacity
+                    style={styles.secondaryAction}
+                    onPress={() => connectLock(lock, 'status')}
+                    disabled={busy}
+                  >
+                    {busy ? (
+                      <ActivityIndicator color="#111" />
+                    ) : (
+                      <Text style={styles.secondaryActionText}>Refresh</Text>
+                    )}
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.secondaryAction}
+                    onPress={() => confirmCommand(lock, 'lock')}
+                    disabled={busy}
+                  >
+                    <Text style={styles.secondaryActionText}>Lock</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.primaryAction}
+                    onPress={() => confirmCommand(lock, 'unlock')}
+                    disabled={busy}
+                  >
+                    <Text style={styles.primaryActionText}>Unlock</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-
-              <View style={styles.lockInfo}>
-                <Text
-                  style={[
-                    styles.lockName,
-                    { color: colors.text },
-                  ]}
-                >
-                  {lock.name ||
-                    lock.lock_name ||
-                    'Unnamed Lock'}
-                </Text>
-
-                <Text
-                  style={[
-                    styles.lockDevice,
-                    {
-                      color:
-                        colors.secondaryText,
-                    },
-                  ]}
-                >
-                  Tuya Device: {lock.device_id || 'N/A'}
-                </Text>
-
-                <Text
-                  style={[
-                    styles.lockStatus,
-                    { color: colors.secondaryText },
-                  ]}
-                >
-                  Status: {lock.status || 'Unknown'}
-                </Text>
-              </View>
-            </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
 
@@ -380,49 +409,20 @@ export default function LockManagementScreen() {
         visible={showAddLock}
         transparent
         animationType="slide"
-        onRequestClose={() =>
-          setShowAddLock(false)
-        }
+        onRequestClose={() => setShowAddLock(false)}
       >
         <View style={styles.modalOverlay}>
-          <View
-            style={[
-              styles.modal,
-              { backgroundColor: colors.card },
-            ]}
-          >
+          <View style={[styles.modal, { backgroundColor: colors.card }]}>
             <View style={styles.modalHeader}>
-              <Text
-                style={[
-                  styles.modalTitle,
-                  { color: colors.text },
-                ]}
-              >
-                Add Tuya Smart Lock
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                Connect Tuya Lock
               </Text>
-
-              <TouchableOpacity
-                onPress={() =>
-                  setShowAddLock(false)
-                }
-              >
-                <Ionicons
-                  name="close"
-                  size={25}
-                  color={colors.text}
-                />
+              <TouchableOpacity onPress={() => setShowAddLock(false)}>
+                <Ionicons name="close" size={25} color={colors.text} />
               </TouchableOpacity>
             </View>
 
-            <Text
-              style={[
-                styles.label,
-                { color: colors.text },
-              ]}
-            >
-              Lock Name
-            </Text>
-
+            <Text style={[styles.label, { color: colors.text }]}>Lock Name</Text>
             <TextInput
               style={[
                 styles.input,
@@ -432,23 +432,15 @@ export default function LockManagementScreen() {
                   borderColor: colors.border,
                 },
               ]}
-              placeholder="e.g. Airbnb 1 Smart Lock"
-              placeholderTextColor={
-                colors.secondaryText
-              }
+              placeholder="Front door lock"
+              placeholderTextColor={colors.secondaryText}
               value={lockName}
               onChangeText={setLockName}
             />
 
-            <Text
-              style={[
-                styles.label,
-                { color: colors.text },
-              ]}
-            >
+            <Text style={[styles.label, { color: colors.text }]}>
               Tuya Device ID
             </Text>
-
             <TextInput
               style={[
                 styles.input,
@@ -458,67 +450,45 @@ export default function LockManagementScreen() {
                   borderColor: colors.border,
                 },
               ]}
-              placeholder="Enter Tuya device ID"
-              placeholderTextColor={
-                colors.secondaryText
-              }
+              placeholder="Device ID from Tuya IoT"
+              placeholderTextColor={colors.secondaryText}
               value={deviceId}
               onChangeText={setDeviceId}
               autoCapitalize="none"
             />
 
-            <Text
-              style={[
-                styles.label,
-                { color: colors.text },
-              ]}
-            >
-              Property
-            </Text>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.propertySelector}
-            >
-              {properties.map((property) => (
-                <TouchableOpacity
-                  key={property.id}
-                  style={[
-                    styles.propertyChip,
-                    propertyId === property.id &&
-                      styles.selectedChip,
-                  ]}
-                  onPress={() =>
-                    setPropertyId(property.id)
-                  }
-                >
-                  <Text
-                    style={[
-                      styles.propertyChipText,
-                      propertyId === property.id &&
-                        styles.selectedChipText,
-                    ]}
-                  >
-                    {property.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <View style={styles.warningBox}>
-              <Ionicons
-                name="shield-checkmark-outline"
-                size={20}
-                color="#555"
-              />
-
-              <Text style={styles.warningText}>
-                Tuya API secrets are kept on the
-                backend. This screen stores the
-                Tuya device reference in SECURTAP.
+            <Text style={[styles.label, { color: colors.text }]}>Property</Text>
+            {properties.length === 0 ? (
+              <Text style={{ color: colors.secondaryText, marginBottom: 15 }}>
+                Add a property first, then connect this lock to it.
               </Text>
-            </View>
+            ) : (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.propertySelector}
+              >
+                {properties.map((property) => (
+                  <TouchableOpacity
+                    key={property.id}
+                    style={[
+                      styles.propertyChip,
+                      propertyId === property.id && styles.selectedChip,
+                    ]}
+                    onPress={() => setPropertyId(property.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.propertyChipText,
+                        propertyId === property.id && styles.selectedChipText,
+                      ]}
+                    >
+                      {property.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
 
             <TouchableOpacity
               style={styles.registerButton}
@@ -528,10 +498,8 @@ export default function LockManagementScreen() {
               {saving ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text
-                  style={styles.registerButtonText}
-                >
-                  Register Smart Lock
+                <Text style={styles.registerButtonText}>
+                  Save and Connect
                 </Text>
               )}
             </TouchableOpacity>
@@ -543,26 +511,10 @@ export default function LockManagementScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-
-  content: {
-    padding: 20,
-    paddingBottom: 110,
-  },
-
-  title: {
-    fontSize: 27,
-    fontWeight: '800',
-  },
-
-  subtitle: {
-    fontSize: 13,
-    marginTop: 4,
-    marginBottom: 18,
-  },
-
+  container: { flex: 1 },
+  content: { padding: 20, paddingBottom: 110 },
+  title: { fontSize: 27, fontWeight: '800' },
+  subtitle: { fontSize: 13, marginTop: 4, marginBottom: 18 },
   addButton: {
     height: 50,
     borderRadius: 14,
@@ -572,42 +524,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 16,
   },
-
-  addButtonText: {
-    color: '#fff',
-    fontWeight: '800',
-    marginLeft: 7,
-  },
-
+  addButtonText: { color: '#fff', fontWeight: '800', marginLeft: 7 },
   emptyCard: {
     borderRadius: 18,
     padding: 30,
     alignItems: 'center',
     marginTop: 15,
   },
-
-  emptyTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: 12,
-  },
-
+  emptyTitle: { fontSize: 18, fontWeight: '800', marginTop: 12 },
   emptyText: {
     textAlign: 'center',
     fontSize: 13,
     lineHeight: 19,
     marginTop: 6,
   },
-
-  lockCard: {
-    minHeight: 90,
-    borderRadius: 18,
-    padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-
+  lockCard: { borderRadius: 18, padding: 14, marginBottom: 12 },
+  lockTop: { flexDirection: 'row', alignItems: 'center' },
   lockIcon: {
     width: 50,
     height: 50,
@@ -616,58 +548,49 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
-  lockInfo: {
+  lockInfo: { flex: 1, marginLeft: 12 },
+  lockName: { fontSize: 15, fontWeight: '800' },
+  lockDevice: { fontSize: 11, marginTop: 4 },
+  lockStatus: { fontSize: 11, marginTop: 3 },
+  actionRow: { flexDirection: 'row', gap: 8, marginTop: 14 },
+  secondaryAction: {
     flex: 1,
-    marginLeft: 12,
+    height: 42,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: '#111',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-
-  lockName: {
-    fontSize: 15,
-    fontWeight: '800',
+  secondaryActionText: { fontWeight: '700', color: '#111' },
+  primaryAction: {
+    flex: 1,
+    height: 42,
+    borderRadius: 11,
+    backgroundColor: '#111',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-
-  lockDevice: {
-    fontSize: 11,
-    marginTop: 4,
-  },
-
-  lockStatus: {
-    fontSize: 11,
-    marginTop: 3,
-  },
-
+  primaryActionText: { fontWeight: '700', color: '#fff' },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',
     justifyContent: 'flex-end',
   },
-
   modal: {
     borderTopLeftRadius: 25,
     borderTopRightRadius: 25,
     padding: 22,
     paddingBottom: 35,
   },
-
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 20,
   },
-
-  modalTitle: {
-    fontSize: 21,
-    fontWeight: '800',
-  },
-
-  label: {
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 7,
-  },
-
+  modalTitle: { fontSize: 21, fontWeight: '800' },
+  label: { fontSize: 13, fontWeight: '700', marginBottom: 7 },
   input: {
     height: 50,
     borderWidth: 1,
@@ -675,11 +598,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     marginBottom: 15,
   },
-
-  propertySelector: {
-    marginBottom: 15,
-  },
-
+  propertySelector: { marginBottom: 15 },
   propertyChip: {
     paddingHorizontal: 15,
     paddingVertical: 10,
@@ -687,37 +606,9 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     marginRight: 8,
   },
-
-  selectedChip: {
-    backgroundColor: '#111',
-  },
-
-  propertyChipText: {
-    color: '#333',
-    fontWeight: '600',
-    fontSize: 12,
-  },
-
-  selectedChipText: {
-    color: '#fff',
-  },
-
-  warningBox: {
-    flexDirection: 'row',
-    backgroundColor: '#e9e9e9',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 15,
-  },
-
-  warningText: {
-    flex: 1,
-    marginLeft: 8,
-    color: '#555',
-    fontSize: 11,
-    lineHeight: 17,
-  },
-
+  selectedChip: { backgroundColor: '#111' },
+  propertyChipText: { color: '#333', fontWeight: '600', fontSize: 12 },
+  selectedChipText: { color: '#fff' },
   registerButton: {
     height: 52,
     borderRadius: 13,
@@ -725,9 +616,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
-  registerButtonText: {
-    color: '#fff',
-    fontWeight: '800',
-  },
+  registerButtonText: { color: '#fff', fontWeight: '800' },
 });

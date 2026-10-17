@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase, getSupabaseErrorMessage } from '../lib/supabase';
+import { APP_NAME, AUTH_CONFIRM_URL } from '../constants';
 
 export default function OtpVerificationScreen({
   email,
@@ -71,7 +72,7 @@ export default function OtpVerificationScreen({
 
       Alert.alert(
         'Email Verified',
-        'Your SECURTAP email has been verified successfully.'
+        `Your ${APP_NAME} email has been verified successfully.`
       );
 
       // Let App.js update its authentication screen.
@@ -152,7 +153,7 @@ export default function OtpVerificationScreen({
           </View>
 
           <Text style={styles.brandTitle}>
-            SECURTAP
+            {APP_NAME.toUpperCase()}
           </Text>
 
           <Text style={styles.title}>
@@ -239,8 +240,8 @@ export default function OtpVerificationScreen({
           </TouchableOpacity>
 
           <Text style={styles.infoText}>
-            Only the latest valid verification code should be used.
-            Never share your code with anyone.
+            Use the latest 6-digit code, or open the confirmation
+            link sent to Gmail. That link opens {AUTH_CONFIRM_URL}.
           </Text>
         </View>
       </KeyboardAvoidingView>

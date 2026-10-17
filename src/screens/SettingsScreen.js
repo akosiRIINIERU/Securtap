@@ -22,8 +22,9 @@ import {
 } from '../lib/supabase';
 
 import { useTheme } from '../context/ThemeContext';
+import { APP_NAME } from '../constants';
 
-export default function SettingsScreen({ onLogout, navigation }) {
+export default function SettingsScreen({ onLogout }) {
   const { colors, darkMode, setDarkMode } = useTheme();
 
   const [user, setUser] = useState(null);
@@ -210,7 +211,7 @@ export default function SettingsScreen({ onLogout, navigation }) {
       const result =
         await LocalAuthentication.authenticateAsync({
           promptMessage:
-            'Confirm SECURTAP biometric login',
+            `Confirm ${APP_NAME} biometric login`,
           cancelLabel: 'Cancel',
         });
 
@@ -227,7 +228,7 @@ export default function SettingsScreen({ onLogout, navigation }) {
 
       Alert.alert(
         'Biometric Login Enabled',
-        'Your device biometric authentication is now enabled for SECURTAP.'
+        `Your device biometric authentication is now enabled for ${APP_NAME}.`
       );
     } catch (error) {
       console.error(
@@ -327,7 +328,7 @@ export default function SettingsScreen({ onLogout, navigation }) {
 
       Alert.alert(
         'Password Changed',
-        'Your SECURTAP password has been changed successfully.'
+        `Your ${APP_NAME} password has been changed successfully.`
       );
     } catch (error) {
       Alert.alert(
@@ -351,49 +352,21 @@ export default function SettingsScreen({ onLogout, navigation }) {
   const handleDataStorage = () => {
     Alert.alert(
       'Data & Storage',
-      'SECURTAP stores account, property, guest, smart-lock, and activity information in Supabase. Local app preferences are stored on this device.'
+      `${APP_NAME} stores account, property, guest, lock, and activity information in Supabase. Local preferences stay on this device.`
     );
   };
 
   const handlePrivacy = () => {
     Alert.alert(
       'Privacy',
-      'SECURTAP only uses information needed for account management, property management, guest management, smart-lock management, and security logs.'
-    );
-  };
-
-  const handleActivityLogs = () => {
-    Alert.alert(
-      'Activity Logs',
-      'Activity log management is connected to the activity_logs table. Open the dashboard to review recent lock activity.'
-    );
-  };
-
-  const handleDisplay = () => {
-    Alert.alert(
-      'Display',
-      'Display settings are available below. Dark Mode and Reduce Motion are saved automatically.'
-    );
-  };
-
-  const handleSupport = () => {
-    Alert.alert(
-      'Help & Support',
-      'For support, check your Supabase logs and SECURTAP application logs. You can also report a problem below.'
-    );
-  };
-
-  const handleReportProblem = () => {
-    Alert.alert(
-      'Report a Problem',
-      'Please provide the error message and the screen where it occurred when reporting an issue.'
+      `${APP_NAME} only uses information needed for accounts, properties, guests, locks, and access logs.`
     );
   };
 
   const handleAbout = () => {
     Alert.alert(
-      'About SECURTAP',
-      'SECURTAP\nTwo-Factor Authentication Smart Lock System\n\nVersion 1.0.0'
+      `About ${APP_NAME}`,
+      `${APP_NAME}\nTuya smart lock management for your property.\n\nVersion 1.0.0`
     );
   };
 
@@ -539,7 +512,7 @@ export default function SettingsScreen({ onLogout, navigation }) {
           <SettingRow
             icon="key-outline"
             title="Change Password"
-            subtitle="Update your SECURTAP password"
+            subtitle={`Update your ${APP_NAME} password`}
             onPress={() => setPasswordModal(true)}
             right={
               <Ionicons
@@ -601,7 +574,7 @@ export default function SettingsScreen({ onLogout, navigation }) {
           <SettingRow
             icon="notifications-outline"
             title="Notifications"
-            subtitle="Enable SECURTAP notifications"
+            subtitle={`Enable ${APP_NAME} notifications`}
             right={
               <Toggle
                 value={notifications}
@@ -702,20 +675,6 @@ export default function SettingsScreen({ onLogout, navigation }) {
           />
 
           <SettingRow
-            icon="phone-portrait-outline"
-            title="Display"
-            subtitle="Display preferences"
-            onPress={handleDisplay}
-            right={
-              <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={colors.secondaryText}
-              />
-            }
-          />
-
-          <SettingRow
             icon="play-outline"
             title="Reduce Motion"
             subtitle="Reduce interface animations"
@@ -726,124 +685,6 @@ export default function SettingsScreen({ onLogout, navigation }) {
                   setReduceMotion(value);
                   saveBoolean(
                     'reduceMotion',
-                    value
-                  );
-                }}
-              />
-            }
-          />
-        </View>
-
-        {/* LOCK & PROPERTY */}
-
-        <Text
-          style={[
-            styles.section,
-            { color: colors.secondaryText },
-          ]}
-        >
-          LOCK & PROPERTY
-        </Text>
-
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.card },
-          ]}
-        >
-          <SettingRow
-            icon="lock-closed-outline"
-            title="Lock Settings"
-            subtitle="Smart-lock configuration"
-            onPress={() =>
-              navigation.navigate('Lock')
-            }
-            right={
-              <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={colors.secondaryText}
-              />
-            }
-          />
-
-          <SettingRow
-            icon="card-outline"
-            title="NFC Cards"
-            subtitle="Manage NFC credentials"
-            onPress={() =>
-              navigation.navigate('Lock')
-            }
-            right={
-              <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={colors.secondaryText}
-              />
-            }
-          />
-
-          <SettingRow
-            icon="finger-print-outline"
-            title="Fingerprints"
-            subtitle="Manage fingerprint credentials"
-            onPress={() =>
-              navigation.navigate('Lock')
-            }
-            right={
-              <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={colors.secondaryText}
-              />
-            }
-          />
-
-          <SettingRow
-            icon="business-outline"
-            title="Property Settings"
-            subtitle="Manage properties"
-            onPress={() =>
-              navigation.navigate('Properties')
-            }
-            right={
-              <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={colors.secondaryText}
-              />
-            }
-          />
-
-          <SettingRow
-            icon="timer-outline"
-            title="Auto Lock"
-            subtitle="Automatically secure locks"
-            right={
-              <Toggle
-                value={autoLock}
-                onValueChange={(value) => {
-                  setAutoLock(value);
-                  saveBoolean(
-                    'autoLock',
-                    value
-                  );
-                }}
-              />
-            }
-          />
-
-          <SettingRow
-            icon="checkmark-circle-outline"
-            title="Unlock Confirmation"
-            subtitle="Confirm remote unlock actions"
-            right={
-              <Toggle
-                value={unlockConfirmation}
-                onValueChange={(value) => {
-                  setUnlockConfirmation(value);
-                  saveBoolean(
-                    'unlockConfirmation',
                     value
                   );
                 }}
@@ -873,19 +714,6 @@ export default function SettingsScreen({ onLogout, navigation }) {
             icon="server-outline"
             title="Data & Storage"
             onPress={handleDataStorage}
-            right={
-              <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={colors.secondaryText}
-              />
-            }
-          />
-
-          <SettingRow
-            icon="list-outline"
-            title="Activity Logs"
-            onPress={handleActivityLogs}
             right={
               <Ionicons
                 name="chevron-forward"
@@ -927,34 +755,8 @@ export default function SettingsScreen({ onLogout, navigation }) {
           ]}
         >
           <SettingRow
-            icon="help-circle-outline"
-            title="Help & Support"
-            onPress={handleSupport}
-            right={
-              <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={colors.secondaryText}
-              />
-            }
-          />
-
-          <SettingRow
-            icon="bug-outline"
-            title="Report a Problem"
-            onPress={handleReportProblem}
-            right={
-              <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={colors.secondaryText}
-              />
-            }
-          />
-
-          <SettingRow
             icon="information-circle-outline"
-            title="About SECURTAP"
+            title={`About ${APP_NAME}`}
             onPress={handleAbout}
             right={
               <Ionicons
@@ -989,7 +791,7 @@ export default function SettingsScreen({ onLogout, navigation }) {
             { color: colors.secondaryText },
           ]}
         >
-          SECURTAP v1.0.0
+          {`${APP_NAME} v1.0.0`}
         </Text>
       </ScrollView>
 
