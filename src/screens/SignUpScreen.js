@@ -13,10 +13,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-import {
-  supabase,
-  getSupabaseErrorMessage,
-} from '../lib/supabase';
+
 
 export default function SignUpScreen({
   onBackToLogin,
@@ -103,7 +100,7 @@ export default function SignUpScreen({
     data: {
       full_name: cleanName
     },
-    emailRedirectTo: 'securtapp://login-successful'
+    emailRedirectTo: 'https://YOUR-GITHUB-USERNAME.github.io/securtap-confirmation/'
   }
 });
       if (error) {
