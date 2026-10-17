@@ -1,15 +1,16 @@
+
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   StyleSheet,
   Text,
   View,
-  SafeAreaView,
   TouchableOpacity,
   TextInput,
   Alert,
   ActivityIndicator,
   ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 import { supabase, getSupabaseErrorMessage } from '../lib/supabase';
@@ -27,13 +28,19 @@ export default function PropertiesScreen({ navigation }) {
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
 
+  // Load every property the authenticated administrator is authorized to see.
   const loadProperties = useCallback(async () => {
     try {
       setLoading(true);
 
       const {
         data: { user },
+        error: userError,
       } = await supabase.auth.getUser();
+
+      if (userError) {
+        throw userError;
+      }
 
       if (!user) {
         setProperties([]);
@@ -43,7 +50,6 @@ export default function PropertiesScreen({ navigation }) {
       const { data, error } = await supabase
         .from('properties')
         .select('*')
-        .eq('admin_id', user.id)
         .order('created_at', {
           ascending: false,
         });
@@ -65,11 +71,10 @@ export default function PropertiesScreen({ navigation }) {
     }
   }, []);
 
+  // Load properties and listen for database changes.
   useEffect(() => {
     loadProperties();
 
-    // IMPORTANT:
-    // .on() MUST come before .subscribe()
     const channel = supabase
       .channel('properties-realtime')
       .on(
@@ -84,19 +89,13 @@ export default function PropertiesScreen({ navigation }) {
         }
       )
       .subscribe((status, error) => {
-        console.log(
-          'Properties realtime status:',
-          status
-        );
+        console.log('Properties realtime status:', status);
 
         if (
           status === 'CHANNEL_ERROR' ||
           status === 'TIMED_OUT'
         ) {
-          console.error(
-            'Properties realtime error:',
-            error
-          );
+          console.error('Properties realtime error:', error);
         }
       });
 
@@ -105,6 +104,7 @@ export default function PropertiesScreen({ navigation }) {
     };
   }, [loadProperties]);
 
+  // Add a new shared property.
   const handleAddProperty = async () => {
     const cleanName = name.trim();
     const cleanAddress = address.trim();
@@ -117,12 +117,21 @@ export default function PropertiesScreen({ navigation }) {
       return;
     }
 
+    if (adding) {
+      return;
+    }
+
     try {
       setAdding(true);
 
       const {
         data: { user },
+        error: userError,
       } = await supabase.auth.getUser();
+
+      if (userError) {
+        throw userError;
+      }
 
       if (!user) {
         Alert.alert(
@@ -132,12 +141,16 @@ export default function PropertiesScreen({ navigation }) {
         return;
       }
 
+      // property_name is required by the database.
+      // name is also populated for compatibility with the current UI.
       const { error } = await supabase
         .from('properties')
         .insert({
+          property_name: cleanName,
           name: cleanName,
           address: cleanAddress || null,
           admin_id: user.id,
+          created_by: user.id,
         });
 
       if (error) {
@@ -157,6 +170,13 @@ export default function PropertiesScreen({ navigation }) {
     } catch (error) {
       console.error('Add property error:', error);
 
+      console.error('Supabase error details:', {
+        code: error?.code,
+        message: error?.message,
+        details: error?.details,
+        hint: error?.hint,
+      });
+
       Alert.alert(
         'Unable to Add Property',
         getSupabaseErrorMessage(error)
@@ -164,6 +184,16 @@ export default function PropertiesScreen({ navigation }) {
     } finally {
       setAdding(false);
     }
+  };
+
+  const handleCancelAdd = () => {
+    if (adding) {
+      return;
+    }
+
+    setShowAddForm(false);
+    setName('');
+    setAddress('');
   };
 
   return (
@@ -176,6 +206,7 @@ export default function PropertiesScreen({ navigation }) {
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <Text
           style={[
@@ -183,7 +214,7 @@ export default function PropertiesScreen({ navigation }) {
             { color: colors.text },
           ]}
         >
-            {APP_NAME.toUpperCase()}
+          {APP_NAME.toUpperCase()}
         </Text>
 
         <Text
@@ -213,7 +244,9 @@ export default function PropertiesScreen({ navigation }) {
               </Text>
 
               <TouchableOpacity
-                onPress={() => setShowAddForm(false)}
+                onPress={handleCancelAdd}
+                disabled={adding}
+                accessibilityLabel="Close add property form"
               >
                 <Ionicons
                   name="close"
@@ -229,7 +262,7 @@ export default function PropertiesScreen({ navigation }) {
                 { color: colors.text },
               ]}
             >
-              Property Name
+              Property Name *
             </Text>
 
             <TextInput
@@ -245,6 +278,10 @@ export default function PropertiesScreen({ navigation }) {
               placeholderTextColor={colors.secondaryText}
               value={name}
               onChangeText={setName}
+              autoCapitalize="words"
+              maxLength={100}
+              editable={!adding}
+              returnKeyType="next"
             />
 
             <Text
@@ -269,12 +306,20 @@ export default function PropertiesScreen({ navigation }) {
               placeholderTextColor={colors.secondaryText}
               value={address}
               onChangeText={setAddress}
+              autoCapitalize="sentences"
+              maxLength={300}
+              editable={!adding}
+              returnKeyType="done"
             />
 
             <TouchableOpacity
-              style={styles.primaryButton}
+              style={[
+                styles.primaryButton,
+                adding && styles.disabledButton,
+              ]}
               onPress={handleAddProperty}
               disabled={adding}
+              accessibilityRole="button"
             >
               {adding ? (
                 <ActivityIndicator color="#fff" />
@@ -291,6 +336,7 @@ export default function PropertiesScreen({ navigation }) {
           <TouchableOpacity
             style={styles.addButton}
             onPress={() => setShowAddForm(true)}
+            accessibilityRole="button"
           >
             <Ionicons
               name="add"
@@ -343,57 +389,63 @@ export default function PropertiesScreen({ navigation }) {
             </Text>
           </View>
         ) : (
-          properties.map((property) => (
-            <TouchableOpacity
-              key={property.id}
-              style={[
-                styles.propertyCard,
-                { backgroundColor: colors.card },
-              ]}
-              onPress={() => {
-                Alert.alert(
-                  property.name,
-                  property.address ||
-                    'No address provided.'
-                );
-              }}
-            >
-              <View style={styles.propertyIcon}>
+          properties.map((property) => {
+            const propertyName =
+              property.property_name ||
+              property.name ||
+              'Unnamed Property';
+
+            return (
+              <TouchableOpacity
+                key={property.id}
+                style={[
+                  styles.propertyCard,
+                  { backgroundColor: colors.card },
+                ]}
+                onPress={() => {
+                  Alert.alert(
+                    propertyName,
+                    property.address || 'No address provided.'
+                  );
+                }}
+                accessibilityRole="button"
+              >
+                <View style={styles.propertyIcon}>
+                  <Ionicons
+                    name="business-outline"
+                    size={24}
+                    color="#111"
+                  />
+                </View>
+
+                <View style={styles.propertyInfo}>
+                  <Text
+                    style={[
+                      styles.propertyName,
+                      { color: colors.text },
+                    ]}
+                  >
+                    {propertyName}
+                  </Text>
+
+                  <Text
+                    style={[
+                      styles.propertyAddress,
+                      { color: colors.secondaryText },
+                    ]}
+                  >
+                    {property.address || 'No address provided'}
+                  </Text>
+                </View>
+
                 <Ionicons
-                  name="business-outline"
-                  size={24}
-                  color="#111"
+                  name="chevron-forward"
+                  size={20}
+                  color={colors.secondaryText}
                 />
-              </View>
-
-              <View style={styles.propertyInfo}>
-                <Text
-                  style={[
-                    styles.propertyName,
-                    { color: colors.text },
-                  ]}
-                >
-                  {property.name}
-                </Text>
-
-                <Text
-                  style={[
-                    styles.propertyAddress,
-                    { color: colors.secondaryText },
-                  ]}
-                >
-                  {property.address ||
-                    'No address provided'}
-                </Text>
-              </View>
-
-              <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={colors.secondaryText}
-              />
-            </TouchableOpacity>
-          ))
+              </TouchableOpacity>
+            );
+          })
         )}
       </ScrollView>
     </SafeAreaView>
@@ -476,6 +528,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#111',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+
+  disabledButton: {
+    opacity: 0.6,
   },
 
   primaryButtonText: {
