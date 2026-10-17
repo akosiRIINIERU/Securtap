@@ -97,15 +97,15 @@ export default function SignUpScreen({
 
     try {
       const { data, error } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: {
-          data: {
-            full_name: cleanName,
-          },
-        },
-      });
-
+  email: cleanEmail,
+  password,
+  options: {
+    data: {
+      full_name: cleanName
+    },
+    emailRedirectTo: 'securtapp://login-successful'
+  }
+});
       if (error) {
         console.error('Sign up error:', error);
 
@@ -117,18 +117,7 @@ export default function SignUpScreen({
       }
 
       if (data?.user && !data?.session) {
-        // Registration is pending email verification.
-        // Open the OTP screen instead of returning to Login.
-        if (typeof onOtpSent === 'function') {
-          onOtpSent(cleanEmail);
-        } else {
-          Alert.alert(
-            'Check Your Gmail',
-            `A verification code should be sent to ${cleanEmail}.`
-          );
-        }
-
-        return;
+        onOtpSent(cleanEmail);
       }
 
       if (data?.session) {
