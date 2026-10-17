@@ -1,12 +1,11 @@
 import { StyleSheet, View, ActivityIndicator, Text, TouchableOpacity, } from 'react-native';
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, View, ActivityIndicator } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-
+import OtpVerificationScreen from './src/screens/OtpVerificationScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
@@ -141,7 +140,8 @@ function MainAppTabs({ onLogout }) {
 export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
-
+const [showOtpVerification, setShowOtpVerification] = useState(false);
+const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   const [showSignUp, setShowSignUp] = useState(false);
 
@@ -333,8 +333,13 @@ export default function App() {
           />
         ) : showSignUp ? (
           <SignUpScreen
-            onBackToLogin={() => setShowSignUp(false)}
-          />
+  onBackToLogin={() => setShowSignUp(false)}
+  onOtpSent={(email) => {
+    setPendingVerificationEmail(email);
+    setShowOtpVerification(true);
+    setShowSignUp(false);
+  }}
+/>
         ) : (
           <LoginScreen
             onLoginSuccess={(newSession) => {
@@ -348,7 +353,22 @@ export default function App() {
       </NavigationContainer>
     </ThemeProvider>
   );
+  {showOtpVerification && (
+  <OtpVerificationScreen
+    email={pendingVerificationEmail}
+    onVerified={() => {
+      setShowOtpVerification(false);
+      setShowSignUp(false);
+    }}
+    onBackToSignUp={() => {
+      setShowOtpVerification(false);
+      setShowSignUp(true);
+    }}
+  />
+)}
 }
+
+
 
 const styles = StyleSheet.create({
   loadingContainer: {

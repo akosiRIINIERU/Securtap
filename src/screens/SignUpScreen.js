@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import {
   StyleSheet,
@@ -17,12 +18,14 @@ import {
   getSupabaseErrorMessage,
 } from '../lib/supabase';
 
-export default function SignUpScreen({ onBackToLogin }) {
+export default function SignUpScreen({
+  onBackToLogin,
+  onOtpSent,
+}) {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-
   const [loading, setLoading] = useState(false);
 
   const isValidGmail = (value) => {
@@ -34,7 +37,6 @@ export default function SignUpScreen({ onBackToLogin }) {
     const cleanName = fullName.trim();
     const cleanEmail = email.trim().toLowerCase();
 
-    // Full name
     if (!cleanName) {
       Alert.alert(
         'Missing Name',
@@ -43,7 +45,6 @@ export default function SignUpScreen({ onBackToLogin }) {
       return;
     }
 
-    // Gmail
     if (!cleanEmail) {
       Alert.alert(
         'Missing Gmail',
@@ -60,7 +61,6 @@ export default function SignUpScreen({ onBackToLogin }) {
       return;
     }
 
-    // Password
     if (!password) {
       Alert.alert(
         'Missing Password',
@@ -77,7 +77,6 @@ export default function SignUpScreen({ onBackToLogin }) {
       return;
     }
 
-    // Confirm password
     if (!confirmPassword) {
       Alert.alert(
         'Confirm Password',
@@ -94,19 +93,16 @@ export default function SignUpScreen({ onBackToLogin }) {
       return;
     }
 
-    try {
-      setLoading(true);
+    setLoading(true);
 
+    try {
       const { data, error } = await supabase.auth.signUp({
         email: cleanEmail,
-        password: password,
-
+        password,
         options: {
           data: {
             full_name: cleanName,
           },
-
-          emailRedirectTo: 'securtap://reset-password',
         },
       });
 
@@ -117,46 +113,35 @@ export default function SignUpScreen({ onBackToLogin }) {
           'Sign Up Failed',
           getSupabaseErrorMessage(error)
         );
-
         return;
       }
 
-      /*
-       * With email confirmation enabled,
-       * Supabase normally returns a user but
-       * no active session until the email is verified.
-       */
       if (data?.user && !data?.session) {
-        Alert.alert(
-          'Check Your Gmail',
-          `A verification email has been sent to ${cleanEmail}.\n\nPlease open Gmail and verify your email address before logging in.`,
-          [
-            {
-              text: 'Go to Login',
-              onPress: onBackToLogin,
-            },
-          ]
-        );
+        // Registration is pending email verification.
+        // Open the OTP screen instead of returning to Login.
+        if (typeof onOtpSent === 'function') {
+          onOtpSent(cleanEmail);
+        } else {
+          Alert.alert(
+            'Check Your Gmail',
+            `A verification code should be sent to ${cleanEmail}.`
+          );
+        }
 
         return;
       }
 
-      /*
-       * If email confirmation is disabled,
-       * Supabase may immediately create a session.
-       *
-       * We still send the user back to Login so
-       * the normal SECURTAP login flow is used.
-       */
+      if (data?.session) {
+        Alert.alert(
+          'Email Confirmation Required',
+          'Supabase returned an active session. Check your email confirmation settings to ensure new accounts must verify their email.'
+        );
+        return;
+      }
+
       Alert.alert(
-        'Account Created',
-        'Your SECURTAP account has been created successfully.',
-        [
-          {
-            text: 'Go to Login',
-            onPress: onBackToLogin,
-          },
-        ]
+        'Registration Pending',
+        'Please check your email and try signing in after verification.'
       );
     } catch (error) {
       console.error('Unexpected sign up error:', error);
@@ -178,7 +163,6 @@ export default function SignUpScreen({ onBackToLogin }) {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.card}>
-
           {/* Logo */}
           <View style={styles.logoBox}>
             <Text style={styles.xText}>✕</Text>
@@ -314,7 +298,7 @@ export default function SignUpScreen({ onBackToLogin }) {
             )}
           </TouchableOpacity>
 
-          {/* Gmail information */}
+          {/* Gmail Information */}
           <View style={styles.infoBox}>
             <Ionicons
               name="information-circle-outline"
@@ -323,9 +307,9 @@ export default function SignUpScreen({ onBackToLogin }) {
             />
 
             <Text style={styles.infoText}>
-              Your Gmail must be verified before you can
-              use your SECURTAP account. The same Gmail
-              will be used for password recovery.
+              A verification code will be sent to your Gmail.
+              Verify your email before signing in to SECURTAP.
+              Your Gmail will also be used for password recovery.
             </Text>
           </View>
 
@@ -344,7 +328,6 @@ export default function SignUpScreen({ onBackToLogin }) {
               </Text>
             </TouchableOpacity>
           </View>
-
         </View>
       </ScrollView>
     </SafeAreaView>
