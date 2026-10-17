@@ -82,68 +82,63 @@ export default function LoginScreen({
   // FORGOT PASSWORD
   // =========================
 
-  const handleForgotPassword = async () => {
-    const cleanEmail = email.trim().toLowerCase();
+  
+const handleForgotPassword = async () => {
+  const cleanEmail = email.trim().toLowerCase();
 
-    if (!cleanEmail) {
-      Alert.alert(
-        'Enter Your Gmail',
-        'Please enter your Gmail address in the email field first.'
-      );
-      return;
-    }
+  if (!cleanEmail) {
+    Alert.alert(
+      'Enter Your Gmail',
+      'Please enter your Gmail address in the email field first.'
+    );
+    return;
+  }
 
-    if (!cleanEmail.endsWith('@gmail.com')) {
-      Alert.alert(
-        'Invalid Gmail',
-        'Please enter a valid Gmail address.'
-      );
-      return;
-    }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    Alert.alert(
+      'Invalid Email',
+      'Please enter a valid email address.'
+    );
+    return;
+  }
 
-    try {
-      setForgotLoading(true);
+  try {
+    setForgotLoading(true);
 
-      const { error } =
-        await supabase.auth.resetPasswordForEmail(
-          cleanEmail,
-          {
-            redirectTo: 'securtap://reset-password',
-          }
-        );
-
-      if (error) {
-        console.error(
-          'Password recovery error:',
-          error
-        );
-
-        Alert.alert(
-          'Unable to Send Reset Email',
-          getSupabaseErrorMessage(error)
-        );
-
-        return;
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      cleanEmail,
+      {
+        redirectTo:
+          'https://akosiriinieru.github.io/SignUpVerification/reset-password.html',
       }
+    );
+
+    if (error) {
+      console.error('Password recovery error:', error);
 
       Alert.alert(
-        'Reset Email Sent',
-        `A password reset email has been sent to ${cleanEmail}.\n\nOpen Gmail and follow the instructions to reset your SECURTAP password.`
-      );
-    } catch (error) {
-      console.error(
-        'Unexpected password recovery error:',
-        error
-      );
-
-      Alert.alert(
-        'Reset Error',
+        'Unable to Send Reset Email',
         getSupabaseErrorMessage(error)
       );
-    } finally {
-      setForgotLoading(false);
+      return;
     }
-  };
+
+    Alert.alert(
+      'Reset Email Requested',
+      `If an account exists for ${cleanEmail}, check your inbox for the password reset email. Open the link on the same device or browser where you intend to reset your password.`
+    );
+  } catch (error) {
+    console.error('Unexpected password recovery error:', error);
+
+    Alert.alert(
+      'Reset Error',
+      getSupabaseErrorMessage(error)
+    );
+  } finally {
+    setForgotLoading(false);
+  }
+};
+
 
   // =========================
   // UI
