@@ -242,26 +242,7 @@ export default function LockManagementScreen() {
     }
   };
 
-  const confirmCommand = (lock, action) => {
-    const name = lock.lock_name || 'this smart lock';
-    const commandLabel =
-      action === 'unlock' ? 'Unlock' : 'Lock';
 
-    Alert.alert(
-      `${commandLabel} Door?`,
-      `${commandLabel} ${name}? Make sure it is safe to operate the door.`,
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: commandLabel,
-          onPress: () => connectLock(lock, action),
-        },
-      ]
-    );
-  };
 
   const registerLock = async () => {
     const cleanName = lockName.trim();
@@ -552,25 +533,6 @@ export default function LockManagementScreen() {
                     )}
                   </TouchableOpacity>
 
-                  <TouchableOpacity
-                    style={styles.secondaryAction}
-                    onPress={() => confirmCommand(lock, 'lock')}
-                    disabled={busy}
-                  >
-                    <Text style={styles.secondaryActionText}>
-                      Lock
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.primaryAction}
-                    onPress={() => confirmCommand(lock, 'unlock')}
-                    disabled={busy}
-                  >
-                    <Text style={styles.primaryActionText}>
-                      Unlock
-                    </Text>
-                  </TouchableOpacity>
                 </View>
               </View>
             );

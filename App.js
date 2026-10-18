@@ -6,7 +6,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
-import OtpVerificationScreen from './src/screens/OtpVerificationScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
@@ -129,8 +128,6 @@ const menuCardStyle = {
 export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showOtpVerification, setShowOtpVerification] = useState(false);
-  const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   const [showSignUp, setShowSignUp] = useState(false);
 
@@ -185,7 +182,6 @@ export default function App() {
       ) {
         setSession(newSession);
         if (newSession) {
-          setShowOtpVerification(false);
           setShowSignUp(false);
         }
         return;
@@ -195,7 +191,6 @@ export default function App() {
         setSession(null);
         setIsPasswordRecovery(false);
         setShowSignUp(false);
-        setShowOtpVerification(false);
       }
     });
 
@@ -207,15 +202,32 @@ export default function App() {
 
   useEffect(() => {
     const handleDeepLink = async (url) => {
-      if (!url) {
-        return;
-      }
+      if (!url) return;
 
-      if (
-        url.includes('reset-password') ||
-        url.includes('type=recovery')
-      ) {
-        setIsPasswordRecovery(true);
+      try {
+        const parsed = new URL(url);
+        const params = new URLSearchParams(parsed.search);
+        const hashParams = new URLSearchParams(parsed.hash.replace(/^#/, ''));
+        const code = params.get('code');
+        const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+        const recovery = url.includes('reset-password') ||
+          params.get('type') === 'recovery' || hashParams.get('type') === 'recovery';
+
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+        } else if (accessToken && refreshToken) {
+          const { error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (error) throw error;
+        }
+
+        if (recovery) setIsPasswordRecovery(true);
+      } catch (error) {
+        console.error('Authentication deep link could not be processed:', error);
       }
     };
 
@@ -291,29 +303,10 @@ export default function App() {
     );
   } else if (session) {
     content = <MainAppTabs onLogout={handleLogout} />;
-  } else if (showOtpVerification) {
-    content = (
-      <OtpVerificationScreen
-        email={pendingVerificationEmail}
-        onVerified={() => {
-          setShowOtpVerification(false);
-          setShowSignUp(false);
-        }}
-        onBackToSignUp={() => {
-          setShowOtpVerification(false);
-          setShowSignUp(true);
-        }}
-      />
-    );
   } else if (showSignUp) {
     content = (
       <SignUpScreen
         onBackToLogin={() => setShowSignUp(false)}
-        onOtpSent={(email) => {
-          setPendingVerificationEmail(email);
-          setShowOtpVerification(true);
-          setShowSignUp(false);
-        }}
       />
     );
   }

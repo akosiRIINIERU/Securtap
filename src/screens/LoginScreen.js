@@ -89,8 +89,8 @@ const handleForgotPassword = async () => {
 
   if (!cleanEmail) {
     Alert.alert(
-      'Enter Your Gmail',
-      'Please enter your Gmail address in the email field first.'
+      'Enter Your Email',
+      'Please enter your email address in the email field first.'
     );
     return;
   }
@@ -125,7 +125,7 @@ const handleForgotPassword = async () => {
 
     Alert.alert(
       'Reset Email Requested',
-      `If an account exists for ${cleanEmail}, open the reset link in your email. It opens the ${APP_NAME} password page on GitHub so you can set a new password.`
+      `If an account exists for ${cleanEmail}, open the reset link in your email. Open the link on this device to securely choose a new password in ${APP_NAME}.`
     );
   } catch (error) {
     console.error('Unexpected password recovery error:', error);
@@ -286,7 +286,7 @@ const handleForgotPassword = async () => {
           />
 
           <Text style={styles.infoText}>
-            {`Sign-up and password reset links open the ${APP_NAME} GitHub verification pages.`}
+            {`Open the confirmation or password reset link on this device to continue securely in ${APP_NAME}.`}
           </Text>
         </View>
 

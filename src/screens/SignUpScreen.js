@@ -16,7 +16,6 @@ import { APP_NAME, AUTH_CONFIRM_URL } from '../constants';
 
 export default function SignUpScreen({
   onBackToLogin,
-  onOtpSent,
 }) {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -24,10 +23,7 @@ export default function SignUpScreen({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const isValidGmail = (value) => {
-    const gmailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/i;
-    return gmailRegex.test(value.trim());
-  };
+  const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
   const handleSignUp = async () => {
     const cleanName = fullName.trim();
@@ -43,16 +39,16 @@ export default function SignUpScreen({
 
     if (!cleanEmail) {
       Alert.alert(
-        'Missing Gmail',
-        'Please enter your Gmail address.'
+        'Missing Email',
+        'Please enter your email address.'
       );
       return;
     }
 
-    if (!isValidGmail(cleanEmail)) {
+    if (!isValidEmail(cleanEmail)) {
       Alert.alert(
-        'Invalid Gmail',
-        'Please use a valid Gmail address ending with @gmail.com.'
+        'Invalid Email',
+        'Please enter a valid email address.'
       );
       return;
     }
@@ -114,13 +110,17 @@ export default function SignUpScreen({
       }
 
       if (data?.user && !data?.session) {
-        onOtpSent(cleanEmail);
+        Alert.alert(
+          'Check Your Email',
+          `We sent a confirmation link to ${cleanEmail}. Open it on this device to verify your email. The app should complete confirmation automatically; if it returns to sign-in, sign in normally.`,
+          [{ text: 'Back to Sign In', onPress: onBackToLogin }]
+        );
         return;
       }
 
       Alert.alert(
-        'Check Your Email',
-        `Open the confirmation link we sent to ${cleanEmail} to finish creating your ${APP_NAME} account.`
+        'Account Created',
+        `Your ${APP_NAME} account is ready. You can sign in now.`
       );
     } catch (error) {
       console.error('Unexpected sign up error:', error);
@@ -182,9 +182,9 @@ export default function SignUpScreen({
             />
           </View>
 
-          {/* Gmail */}
+          {/* Email address */}
           <Text style={styles.label}>
-            Gmail Address
+            Email Address
           </Text>
 
           <View style={styles.inputContainer}>
@@ -196,7 +196,7 @@ export default function SignUpScreen({
 
             <TextInput
               style={styles.input}
-              placeholder="example@gmail.com"
+              placeholder="you@example.com"
               placeholderTextColor="#888"
               value={email}
               onChangeText={setEmail}
@@ -277,7 +277,7 @@ export default function SignUpScreen({
             )}
           </TouchableOpacity>
 
-          {/* Gmail Information */}
+          {/* Email confirmation information */}
           <View style={styles.infoBox}>
             <Ionicons
               name="information-circle-outline"
@@ -286,7 +286,7 @@ export default function SignUpScreen({
             />
 
             <Text style={styles.infoText}>
-              {`A confirmation email will open on the ${APP_NAME} GitHub verification page. You can also enter the 6-digit code in the app.`}
+              {`We will email you a confirmation link. Open it to verify your email address; no code entry is needed.`}
             </Text>
           </View>
 

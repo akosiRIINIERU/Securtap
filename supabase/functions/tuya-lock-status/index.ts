@@ -169,11 +169,9 @@ Deno.serve(async (req: Request) => {
       console.error("smart_locks lookup error:", lockError);
     }
 
-    const isConfiguredDevice = envDeviceId && deviceId === envDeviceId;
-
-    if (!ownedLock && !isConfiguredDevice) {
+    if (!ownedLock) {
       return jsonResponse(
-        { error: "This lock is not connected to your Securtap account." },
+        { error: "This lock is not connected to your Random Client account." },
         403,
       );
     }

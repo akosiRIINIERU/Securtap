@@ -853,7 +853,7 @@ export default function SettingsScreen({ onLogout }) {
                 { color: colors.secondaryText },
               ]}
             >
-              Bound Gmail: {user?.email || 'Unknown'}
+              Account email: {user?.email || 'Unknown'}
             </Text>
 
             <TouchableOpacity

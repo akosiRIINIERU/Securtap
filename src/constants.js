@@ -1,7 +1,5 @@
-export const APP_NAME = 'Securtap';
+export const APP_NAME = 'Random Client';
 
-export const AUTH_CONFIRM_URL =
-  'https://akosiriinieru.github.io/SignUpVerification/';
-
-export const AUTH_RESET_URL =
-  'https://akosiriinieru.github.io/SignUpVerification/reset-password.html';
+// Configure these redirect URLs in Supabase Authentication > URL Configuration.
+export const AUTH_CONFIRM_URL = 'securtapp://auth/callback';
+export const AUTH_RESET_URL = 'securtapp://auth/reset-password';

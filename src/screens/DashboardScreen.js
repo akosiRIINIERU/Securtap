@@ -258,23 +258,18 @@ export default function DashboardScreen() {
           <View style={styles.metricCard}>
             <View style={styles.iconCircle}>
               <Ionicons
-                name="lock-closed-outline"
+                name="people-outline"
                 size={21}
                 color="#111"
               />
             </View>
 
             <Text style={styles.metricNumber}>
-              {
-                locks.filter(
-                  (lock) =>
-                    lock.status === 'locked'
-                ).length
-              }
+              {guests.length}
             </Text>
 
             <Text style={styles.metricLabel}>
-              Locked
+              Total Guests
             </Text>
           </View>
 
