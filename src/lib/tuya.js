@@ -2,13 +2,13 @@
 import { supabase } from './supabase';
 
 function formatTuyaFunctionError(parsed, fallbackError, httpStatus) {
+  const errorText = parsed?.error || '';
+  const tuyaMessage = parsed?.tuyaMessage || '';
   const parts = [
-    parsed?.error,
-    parsed?.tuyaMessage && parsed.tuyaMessage !== parsed?.error
-      ? parsed.tuyaMessage
-      : null,
+    errorText,
+    tuyaMessage && !errorText.includes(tuyaMessage) ? tuyaMessage : null,
     parsed?.tuyaCode != null ? `Tuya error ${parsed.tuyaCode}` : null,
-    !parsed?.error && httpStatus
+    !errorText && httpStatus
       ? `Smart Lock request failed (HTTP ${httpStatus}).`
       : null,
   ].filter(Boolean);

@@ -95,6 +95,10 @@ function describeTuyaError(error: TuyaApiError): string {
     return "Tuya denied access to this lock. In Cloud > Development > your project > Devices, confirm the lock is listed. If it is not, use Link Tuya App Account with the Smart Life/Tuya account that paired it. Also authorize IoT Core on this same project, use Tuya device_id not UUID, and match TUYA_API_BASE_URL to the lock's data center.";
   }
 
+  if (code === 40001900) {
+    return "Tuya IoT Core has no space permission for this lock. In Cloud > Development > your project > Devices, transfer the lock into a space that belongs to this project, then retry. Linked Smart Life devices still need that space assignment for v2 APIs.";
+  }
+
   if (code === 2010) {
     return "Tuya could not find this device ID in the configured data center.";
   }
@@ -112,7 +116,12 @@ function shouldTryNextDeviceApi(error: unknown): boolean {
   }
 
   const code = numericTuyaCode(error.code);
-  return code === 1106 || code === 2010 || code === 28841105;
+  return (
+    code === 1106 ||
+    code === 2010 ||
+    code === 28841105 ||
+    code === 40001900
+  );
 }
 
 function encodeDeviceId(deviceId: string): string {
@@ -317,9 +326,9 @@ async function getDeviceStatus(
   const data = await tryTuyaAttempts(
     [
       {
-        name: "iot-core-v2-properties",
+        name: "smart-home-status",
         method: "GET",
-        path: `/v2.0/cloud/thing/${id}/shadow/properties`,
+        path: `/v1.0/devices/${id}/status`,
       },
       {
         name: "iot-03-status",
@@ -327,14 +336,14 @@ async function getDeviceStatus(
         path: `/v1.0/iot-03/devices/${id}/status`,
       },
       {
-        name: "smart-home-status",
-        method: "GET",
-        path: `/v1.0/devices/${id}/status`,
-      },
-      {
         name: "iot-03-multi-status",
         method: "GET",
         path: `/v1.0/iot-03/devices/status?device_ids=${id}`,
+      },
+      {
+        name: "iot-core-v2-properties",
+        method: "GET",
+        path: `/v2.0/cloud/thing/${id}/shadow/properties`,
       },
     ],
     accessToken,
@@ -362,14 +371,10 @@ async function sendDeviceCommand(
   const data = await tryTuyaAttempts(
     [
       {
-        name: "iot-core-v2-issue",
+        name: "smart-home-commands",
         method: "POST",
-        path: `/v2.0/cloud/thing/${id}/shadow/properties/issue`,
-        body: {
-          properties: JSON.stringify({
-            [commandCode]: commandValue,
-          }),
-        },
+        path: `/v1.0/devices/${id}/commands`,
+        body: commandsBody,
       },
       {
         name: "iot-03-commands",
@@ -378,10 +383,14 @@ async function sendDeviceCommand(
         body: commandsBody,
       },
       {
-        name: "smart-home-commands",
+        name: "iot-core-v2-issue",
         method: "POST",
-        path: `/v1.0/devices/${id}/commands`,
-        body: commandsBody,
+        path: `/v2.0/cloud/thing/${id}/shadow/properties/issue`,
+        body: {
+          properties: JSON.stringify({
+            [commandCode]: commandValue,
+          }),
+        },
       },
     ],
     accessToken,
@@ -404,6 +413,28 @@ async function logDeviceVisibility(
     console.log("Tuya IoT Core v2 can load this device details.");
   } catch (error) {
     console.warn("Tuya IoT Core v2 cannot load this device details:", {
+      code: error instanceof TuyaApiError ? error.code : null,
+      message: error instanceof TuyaApiError ? error.tuyaMessage : null,
+    });
+  }
+
+  try {
+    const spaces = await tuyaRequest(
+      "GET",
+      "/v2.0/cloud/space/child?page_no=1&page_size=20",
+      accessToken,
+    );
+
+    const list =
+      spaces.result?.list ??
+      spaces.result?.data ??
+      spaces.result;
+
+    console.log("Tuya space diagnostic:", {
+      spaceCount: Array.isArray(list) ? list.length : null,
+    });
+  } catch (error) {
+    console.warn("Could not list Tuya spaces:", {
       code: error instanceof TuyaApiError ? error.code : null,
       message: error instanceof TuyaApiError ? error.tuyaMessage : null,
     });
