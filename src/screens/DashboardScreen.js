@@ -247,11 +247,11 @@ export default function DashboardScreen() {
             </View>
 
             <Text style={styles.metricNumber}>
-              {units.length}
+              {guests.filter((guest) => guest.status === 'reserved').length}
             </Text>
 
             <Text style={styles.metricLabel}>
-              Active Units
+              Pending Guests
             </Text>
           </View>
 
@@ -305,7 +305,7 @@ export default function DashboardScreen() {
 
                 <View style={styles.activityInfo}>
                   <Text style={styles.activityTitle}>
-                    {activity.action ||
+                    {activity.title || activity.activity_type ||
                       'Activity'}
                   </Text>
 
@@ -332,14 +332,14 @@ export default function DashboardScreen() {
             </Text>
           </View>
 
-          {guests.length === 0 ? (
+          {guests.filter((guest) => guest.status === 'reserved').length === 0 ? (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyText}>
                 No upcoming guests.
               </Text>
             </View>
           ) : (
-            guests.slice(0, 5).map((guest) => (
+            guests.filter((guest) => guest.status === 'reserved').slice(0, 5).map((guest) => (
               <View
                 key={guest.id}
                 style={styles.checkInCard}

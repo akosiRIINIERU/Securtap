@@ -24,6 +24,8 @@ export default function PropertiesScreen({ navigation }) {
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingProperty, setEditingProperty] = useState(null);
+  const [unitNumber, setUnitNumber] = useState('');
 
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
@@ -186,6 +188,52 @@ export default function PropertiesScreen({ navigation }) {
     }
   };
 
+  const openEditProperty = async (property) => {
+    setEditingProperty(property);
+    setName(property.property_name || property.name || '');
+    setAddress(property.address || '');
+    setUnitNumber('');
+    setShowAddForm(false);
+  };
+
+  const handleSaveProperty = async () => {
+    if (!editingProperty) return;
+    const cleanName = name.trim();
+    if (!cleanName) {
+      Alert.alert('Missing Property Name', 'Please enter a property name.');
+      return;
+    }
+    try {
+      setAdding(true);
+      const { error } = await supabase.from('properties').update({
+        property_name: cleanName,
+        name: cleanName,
+        address: address.trim() || null,
+      }).eq('id', editingProperty.id);
+      if (error) throw error;
+
+      // Unit numbers are stored in property_units, not on the property itself.
+      const cleanUnit = unitNumber.trim();
+      if (cleanUnit) {
+        const { error: unitError } = await supabase.from('property_units').insert({
+          property_id: editingProperty.id,
+          unit_name: cleanUnit,
+          unit_number: cleanUnit,
+        });
+        if (unitError) throw unitError;
+      }
+      setEditingProperty(null);
+      setName(''); setAddress(''); setUnitNumber('');
+      await loadProperties();
+      Alert.alert('Property Updated', 'Property details were saved.');
+    } catch (error) {
+      console.error('Update property error:', error);
+      Alert.alert('Unable to Save Changes', getSupabaseErrorMessage(error));
+    } finally {
+      setAdding(false);
+    }
+  };
+
   const handleCancelAdd = () => {
     if (adding) {
       return;
@@ -225,6 +273,27 @@ export default function PropertiesScreen({ navigation }) {
         >
           Your Properties
         </Text>
+
+        {editingProperty && (
+          <View style={[styles.formCard, { backgroundColor: colors.card }]}>
+            <View style={styles.formHeader}>
+              <Text style={[styles.cardHeader, { color: colors.text }]}>Edit Property</Text>
+              <TouchableOpacity onPress={() => { setEditingProperty(null); setName(''); setAddress(''); setUnitNumber(''); }} disabled={adding}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+            <Text style={[styles.label, { color: colors.text }]}>Property Name *</Text>
+            <TextInput style={[styles.input, { backgroundColor: colors.input, color: colors.text, borderColor: colors.border }]} value={name} onChangeText={setName} placeholder="Property name" placeholderTextColor={colors.secondaryText} editable={!adding} />
+            <Text style={[styles.label, { color: colors.text }]}>Address</Text>
+            <TextInput style={[styles.input, { backgroundColor: colors.input, color: colors.text, borderColor: colors.border }]} value={address} onChangeText={setAddress} placeholder="Property address" placeholderTextColor={colors.secondaryText} editable={!adding} />
+            <Text style={[styles.label, { color: colors.text }]}>Add Unit / Room Number</Text>
+            <TextInput style={[styles.input, { backgroundColor: colors.input, color: colors.text, borderColor: colors.border }]} value={unitNumber} onChangeText={setUnitNumber} placeholder="e.g. Room 101 (optional)" placeholderTextColor={colors.secondaryText} editable={!adding} />
+            <Text style={{ color: colors.secondaryText, fontSize: 12, marginBottom: 12 }}>Adding a unit here creates a new unit under this property. Leave blank if you only want to edit the property details.</Text>
+            <TouchableOpacity style={[styles.primaryButton, adding && styles.disabledButton]} onPress={handleSaveProperty} disabled={adding}>
+              {adding ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Save Changes</Text>}
+            </TouchableOpacity>
+          </View>
+        )}
 
         {showAddForm && (
           <View
@@ -402,12 +471,7 @@ export default function PropertiesScreen({ navigation }) {
                   styles.propertyCard,
                   { backgroundColor: colors.card },
                 ]}
-                onPress={() => {
-                  Alert.alert(
-                    propertyName,
-                    property.address || 'No address provided.'
-                  );
-                }}
+                onPress={() => openEditProperty(property)}
                 accessibilityRole="button"
               >
                 <View style={styles.propertyIcon}>

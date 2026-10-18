@@ -1,5 +1,5 @@
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -54,14 +54,25 @@ export default function LockManagementScreen() {
   const [saving, setSaving] = useState(false);
   const [busyLockId, setBusyLockId] = useState('');
   const [showAddLock, setShowAddLock] = useState(false);
+  const [selectedLock, setSelectedLock] = useState(null);
+  const [passcodes, setPasscodes] = useState([]);
+  const [newPin, setNewPin] = useState('');
+  const [pinBusy, setPinBusy] = useState(false);
+  const locksRef = useRef([]);
+
+  // Keep the latest lock list available to the background poll without
+  // rebuilding the timer or realtime subscription whenever status changes.
+  useEffect(() => {
+    locksRef.current = locks;
+  }, [locks]);
 
   const [lockName, setLockName] = useState('');
   const [deviceId, setDeviceId] = useState('');
   const [propertyId, setPropertyId] = useState('');
 
-  const loadLocks = useCallback(async () => {
+  const loadLocks = useCallback(async ({ silent = false } = {}) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
 
       const {
         data: { user },
@@ -141,12 +152,37 @@ export default function LockManagementScreen() {
           table: 'smart_locks',
         },
         () => {
-          loadLocks();
+          // Refresh data silently; don't replace the screen with a spinner.
+          loadLocks({ silent: true });
         }
       )
       .subscribe();
 
+    // Background-only refresh. Keep the existing list interactive while data updates.
+    let pollInProgress = false;
+    const poll = setInterval(async () => {
+      if (pollInProgress) return;
+      pollInProgress = true;
+      try {
+        // Refresh lock metadata silently without triggering the initial loading UI.
+        await loadLocks({ silent: true });
+        for (const lock of locksRef.current) {
+          const id = lock.device_id || lock.tuya_device_id;
+          if (!id) continue;
+          try {
+            const result = await invokeTuyaLock({ action: 'status', deviceId: id });
+            await persistLockStatus(lock, result);
+          } catch (e) {
+            console.warn('Automatic lock status check failed:', lock.id, e?.message);
+          }
+        }
+      } finally {
+        pollInProgress = false;
+      }
+    }, 1000);
+
     return () => {
+      clearInterval(poll);
       supabase.removeChannel(channel);
     };
   }, [loadLocks, loadProperties]);
@@ -352,6 +388,63 @@ export default function LockManagementScreen() {
     }
   };
 
+  const openLockDetails = async (lock) => {
+    setSelectedLock(lock);
+    setNewPin('');
+    const { data, error } = await supabase.from('lock_passcodes')
+      .select('id, label, passcode, status, valid_from, valid_until, created_at, guest_id')
+      .eq('lock_id', lock.id).order('created_at', { ascending: false });
+    if (error) {
+      Alert.alert('Unable to load PINs', getSupabaseErrorMessage(error));
+      setPasscodes([]);
+    } else setPasscodes(data || []);
+  };
+
+  const generatePinRecord = async () => {
+    if (!selectedLock) return;
+    // This creates a database record only. The Tuya lock must separately support
+    // and successfully accept a PIN programming API before this can unlock the door.
+    const pin = String(Math.floor(100000 + Math.random() * 900000));
+    setPinBusy(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error } = await supabase.from('lock_passcodes').insert({
+        lock_id: selectedLock.id,
+        property_id: selectedLock.property_id,
+        label: 'Generated PIN (not synced to lock)',
+        passcode: pin,
+        status: 'active',
+        created_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+      setNewPin(pin);
+      await openLockDetails(selectedLock);
+      Alert.alert('PIN record created', 'Saved in Supabase only. It has NOT been programmed into the physical Tuya lock. Do not give this PIN to a guest until lock programming is supported and confirmed.');
+    } catch (e) {
+      Alert.alert('Unable to create PIN record', getSupabaseErrorMessage(e));
+    } finally { setPinBusy(false); }
+  };
+
+  const revokePinRecord = async (pinRow) => {
+    Alert.alert('Reset PIN record?', 'This disables the record in SECURTAP only. It does not remove the PIN from the physical lock.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Disable record', style: 'destructive', onPress: async () => {
+        const { error } = await supabase.from('lock_passcodes').update({ status: 'revoked', updated_at: new Date().toISOString() }).eq('id', pinRow.id);
+        if (error) Alert.alert('Failed', getSupabaseErrorMessage(error));
+        else await openLockDetails(selectedLock);
+      } },
+    ]);
+  };
+
+  const removeLock = (lock) => Alert.alert('Remove lock from SECURTAP?', 'This removes the database record and associated PIN/NFC/fingerprint records according to your foreign-key rules. It does not unpair the lock from Tuya or erase credentials on the physical lock.', [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Remove record', style: 'destructive', onPress: async () => {
+      const { error } = await supabase.from('smart_locks').delete().eq('id', lock.id);
+      if (error) Alert.alert('Unable to remove lock', getSupabaseErrorMessage(error));
+      else { setSelectedLock(null); await loadLocks(); }
+    } },
+  ]);
+
   const getPropertyName = (property) =>
     property?.property_name ||
     property?.name ||
@@ -432,8 +525,7 @@ export default function LockManagementScreen() {
                 { color: colors.secondaryText },
               ]}
             >
-              Add your Tuya smart lock using its device ID, then refresh
-              its status from this screen.
+              Add your Tuya smart lock using its device ID. Status updates automatically in the background.
             </Text>
           </View>
         ) : (
@@ -519,26 +611,41 @@ export default function LockManagementScreen() {
                 </View>
 
                 <View style={styles.actionRow}>
-                  <TouchableOpacity
-                    style={styles.secondaryAction}
-                    onPress={() => connectLock(lock, 'status')}
-                    disabled={busy}
-                  >
-                    {busy ? (
-                      <ActivityIndicator color="#111" />
-                    ) : (
-                      <Text style={styles.secondaryActionText}>
-                        Refresh
-                      </Text>
-                    )}
+                  <TouchableOpacity style={styles.primaryAction} onPress={() => openLockDetails(lock)}>
+                    <Text style={styles.primaryActionText}>Manage</Text>
                   </TouchableOpacity>
-
+                  <TouchableOpacity style={[styles.secondaryAction, { borderColor: '#b42318' }]} onPress={() => removeLock(lock)}>
+                    <Text style={[styles.secondaryActionText, { color: '#b42318' }]}>Remove</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
             );
           })
         )}
       </ScrollView>
+
+      <Modal visible={!!selectedLock} transparent animationType="slide" onRequestClose={() => setSelectedLock(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modal, { backgroundColor: colors.card }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>{selectedLock?.lock_name || 'Lock details'}</Text>
+              <TouchableOpacity onPress={() => setSelectedLock(null)}><Ionicons name="close" size={25} color={colors.text} /></TouchableOpacity>
+            </View>
+            <Text style={[styles.lockDevice, { color: colors.secondaryText }]}>Device: {selectedLock?.device_id || selectedLock?.tuya_device_id || 'Not configured'}</Text>
+            <Text style={[styles.lockDevice, { color: colors.secondaryText }]}>Status: {selectedLock?.status || 'Unknown'} · Battery: {selectedLock?.battery_level == null ? 'Unknown' : `${selectedLock.battery_level}%`}</Text>
+            <Text style={[styles.sectionHeading, { color: colors.text }]}>PIN records</Text>
+            <Text style={{ color: colors.secondaryText, fontSize: 12, marginBottom: 10 }}>Records below are from Supabase. PIN creation/reset is not yet synced to the physical lock because this project currently only implements Tuya status/lock/unlock actions.</Text>
+            <ScrollView style={{ maxHeight: 180 }}>
+              {passcodes.filter(p => p.status === 'active').map(p => <View key={p.id} style={styles.pinRow}><View style={{ flex: 1 }}><Text style={{ color: colors.text, fontWeight: '700' }}>{p.label}</Text><Text style={{ color: colors.secondaryText }}>{p.passcode} · {p.status}</Text></View><TouchableOpacity onPress={() => revokePinRecord(p)}><Text style={{ color: '#b42318', fontWeight: '700' }}>Reset record</Text></TouchableOpacity></View>)}
+              {passcodes.filter(p => p.status === 'active').length === 0 && <Text style={{ color: colors.secondaryText }}>No active PIN records.</Text>}
+            </ScrollView>
+            <TouchableOpacity style={styles.registerButton} onPress={generatePinRecord} disabled={pinBusy}>
+              {pinBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.registerButtonText}>Generate PIN record</Text>}
+            </TouchableOpacity>
+            <Text style={{ color: colors.secondaryText, fontSize: 11, marginTop: 9 }}>NFC/fingerprint enrollment and five-attempt hardware cooldown need confirmed X6PRO API support. This screen does not simulate successful enrollment.</Text>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={showAddLock}
@@ -819,6 +926,8 @@ const styles = StyleSheet.create({
     fontSize: 21,
     fontWeight: '800',
   },
+  sectionHeading: { fontSize: 15, fontWeight: '800', marginTop: 18, marginBottom: 8 },
+  pinRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#999' },
   label: {
     fontSize: 13,
     fontWeight: '700',
