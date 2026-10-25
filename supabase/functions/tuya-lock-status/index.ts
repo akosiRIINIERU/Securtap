@@ -1,4 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { Buffer } from "node:buffer";
+import { createCipheriv, createDecipheriv, randomInt } from "node:crypto";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -20,9 +22,11 @@ const TUYA_API_BASE_URL = (
   "https://openapi-sg.iotbing.com"
 ).replace(/\/+$/, "");
 
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+
 type DeviceApiAttempt = {
   name: string;
-  method: "GET" | "POST";
+  method: HttpMethod;
   path: string;
   body?: unknown;
 };
@@ -184,7 +188,7 @@ async function hmacSha256(
 }
 
 async function tuyaRequest(
-  method: "GET" | "POST",
+  method: HttpMethod,
   pathAndQuery: string,
   accessToken?: string,
   body?: unknown,
@@ -470,6 +474,483 @@ function readJsonSecret(name: string): unknown {
   }
 }
 
+// ---------------------------------------------------------------------------
+// PIN management (Tuya Smart Lock Open Service: temporary passwords)
+// ---------------------------------------------------------------------------
+
+const PIN_ACTIONS = [
+  "pin_create",
+  "pin_modify",
+  "pin_revoke",
+  "pin_regenerate",
+  "pin_reset_all",
+];
+
+// Tuya: Wi-Fi locks use 7-digit passwords, Zigbee/Bluetooth locks use 6.
+// Set the TUYA_PIN_LENGTH secret to 7 if your lock is Wi-Fi.
+const PIN_LENGTH = (() => {
+  const n = Number(Deno.env.get("TUYA_PIN_LENGTH") || "6");
+  return Number.isInteger(n) && n >= 6 && n <= 8 ? n : 6;
+})();
+
+class PinSaveError extends Error {}
+
+function generatePin(): string {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    let pin = "";
+    for (let i = 0; i < PIN_LENGTH; i++) {
+      pin += randomInt(0, 10).toString();
+    }
+
+    const digits = pin.split("").map(Number);
+    const allSame = digits.every((d) => d === digits[0]);
+    const ascending = digits.every((d, i) => i === 0 || d === digits[i - 1] + 1);
+    const descending = digits.every((d, i) => i === 0 || d === digits[i - 1] - 1);
+
+    if (!allSame && !ascending && !descending) {
+      return pin;
+    }
+  }
+
+  throw new Error("Could not generate a PIN.");
+}
+
+function aesAlgorithm(key: Buffer): string {
+  if (key.length === 16) return "aes-128-ecb";
+  if (key.length === 24) return "aes-192-ecb";
+  if (key.length === 32) return "aes-256-ecb";
+  throw new Error(`Unsupported AES key length (${key.length}).`);
+}
+
+// Tuya requires: decrypt ticket_key with the project's access secret (AES/ECB),
+// then AES/ECB-encrypt the PIN with the resulting key, output as hex.
+function encryptPinWithTicket(pin: string, ticketKeyHex: string): string {
+  const secretKey = Buffer.from(TUYA_ACCESS_SECRET, "utf8");
+  const decipher = createDecipheriv(aesAlgorithm(secretKey), secretKey, null);
+  const rawKey = Buffer.concat([
+    decipher.update(Buffer.from(ticketKeyHex, "hex")),
+    decipher.final(),
+  ]);
+
+  const cipher = createCipheriv(aesAlgorithm(rawKey), rawKey, null);
+  return Buffer.concat([
+    cipher.update(pin, "utf8"),
+    cipher.final(),
+  ]).toString("hex").toUpperCase();
+}
+
+async function getPasswordTicket(deviceId: string, accessToken: string) {
+  const id = encodeDeviceId(deviceId);
+
+  const data = await tryTuyaAttempts(
+    [
+      {
+        name: "door-lock-password-ticket",
+        method: "POST",
+        path: `/v1.0/devices/${id}/door-lock/password-ticket`,
+        body: {},
+      },
+      {
+        name: "smart-lock-password-ticket",
+        method: "POST",
+        path: `/v1.0/smart-lock/devices/${id}/password-ticket`,
+        body: {},
+      },
+    ],
+    accessToken,
+  );
+
+  const ticketId = data.result?.ticket_id;
+  const ticketKey = data.result?.ticket_key;
+
+  if (typeof ticketId !== "string" || typeof ticketKey !== "string") {
+    throw new Error("Tuya did not return a password ticket.");
+  }
+
+  return { ticketId, ticketKey };
+}
+
+async function createTuyaPin(
+  deviceId: string,
+  accessToken: string,
+  pin: string,
+  name: string,
+  effective: number,
+  invalid: number,
+): Promise<string> {
+  const { ticketId, ticketKey } = await getPasswordTicket(deviceId, accessToken);
+
+  const data = await tuyaRequest(
+    "POST",
+    `/v1.0/devices/${encodeDeviceId(deviceId)}/door-lock/temp-password`,
+    accessToken,
+    {
+      name: name.slice(0, 30),
+      password: encryptPinWithTicket(pin, ticketKey),
+      password_type: "ticket",
+      ticket_id: ticketId,
+      effective_time: effective,
+      invalid_time: invalid,
+    },
+  );
+
+  const passwordId = data.result?.id ?? data.result?.pwd_id;
+
+  if (passwordId === undefined || passwordId === null) {
+    throw new Error("Tuya did not return a password ID.");
+  }
+
+  return String(passwordId);
+}
+
+async function modifyTuyaPin(
+  deviceId: string,
+  accessToken: string,
+  passwordId: string,
+  pin: string,
+  name: string,
+  effective: number,
+  invalid: number,
+) {
+  const { ticketId, ticketKey } = await getPasswordTicket(deviceId, accessToken);
+
+  await tuyaRequest(
+    "PUT",
+    `/v1.0/devices/${encodeDeviceId(deviceId)}/door-lock/temp-passwords/${encodeURIComponent(passwordId)}/modify-password`,
+    accessToken,
+    {
+      name: name.slice(0, 30),
+      password: encryptPinWithTicket(pin, ticketKey),
+      password_type: "ticket",
+      ticket_id: ticketId,
+      effective_time: effective,
+      invalid_time: invalid,
+    },
+  );
+}
+
+async function deleteTuyaPin(
+  deviceId: string,
+  accessToken: string,
+  passwordId: string,
+) {
+  await tuyaRequest(
+    "DELETE",
+    `/v1.0/devices/${encodeDeviceId(deviceId)}/door-lock/temp-passwords/${encodeURIComponent(passwordId)}`,
+    accessToken,
+  );
+}
+
+async function clearTuyaPins(deviceId: string, accessToken: string) {
+  await tuyaRequest(
+    "POST",
+    `/v1.0/devices/${encodeDeviceId(deviceId)}/door-lock/temp-passwords/rest-password`,
+    accessToken,
+    {},
+  );
+}
+
+function resolveWindow(validFrom: unknown, validUntil: unknown) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  let effective = nowSec;
+
+  if (typeof validFrom === "string" && validFrom) {
+    const t = Date.parse(validFrom);
+    if (!Number.isNaN(t)) {
+      effective = Math.max(nowSec, Math.floor(t / 1000));
+    }
+  }
+
+  let invalid = effective + 24 * 3600;
+
+  if (typeof validUntil === "string" && validUntil) {
+    const t = Date.parse(validUntil);
+    if (Number.isNaN(t)) return null;
+    invalid = Math.floor(t / 1000);
+  }
+
+  if (invalid <= effective + 60) return null;
+  if (invalid - effective > 365 * 24 * 3600) return null;
+
+  return { effective, invalid };
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function cleanLabel(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const trimmed = value.trim().slice(0, 60);
+  return trimmed || fallback;
+}
+
+type PinContext = {
+  action: string;
+  body: any;
+  supabase: any;
+  lock: { id: string; property_id: string | null };
+  deviceId: string;
+  accessToken: string;
+};
+
+async function createPinFlow(
+  ctx: PinContext,
+  label: string,
+  guestId: string | null,
+  window: { effective: number; invalid: number },
+) {
+  const pin = generatePin();
+
+  const tuyaPasswordId = await createTuyaPin(
+    ctx.deviceId,
+    ctx.accessToken,
+    pin,
+    label,
+    window.effective,
+    window.invalid,
+  );
+
+  const now = new Date().toISOString();
+
+  const { data, error } = await ctx.supabase
+    .from("lock_passcodes")
+    .insert({
+      lock_id: ctx.lock.id,
+      property_id: ctx.lock.property_id,
+      guest_id: guestId,
+      label,
+      passcode: pin,
+      status: "active",
+      valid_from: new Date(window.effective * 1000).toISOString(),
+      valid_until: new Date(window.invalid * 1000).toISOString(),
+      tuya_password_id: tuyaPasswordId,
+      created_at: now,
+      updated_at: now,
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    console.error("Saving PIN record failed:", {
+      code: error.code,
+      message: error.message,
+    });
+
+    // Do not leave an unknown working PIN on the lock.
+    try {
+      await deleteTuyaPin(ctx.deviceId, ctx.accessToken, tuyaPasswordId);
+    } catch (cleanupError) {
+      console.error("Could not remove unsaved PIN from lock:", cleanupError);
+    }
+
+    throw new PinSaveError(
+      "The PIN could not be saved, so it was removed from the lock. Check the lock_passcodes table and its permissions.",
+    );
+  }
+
+  return {
+    pin,
+    passcodeId: data.id as string,
+    validFrom: new Date(window.effective * 1000).toISOString(),
+    validUntil: new Date(window.invalid * 1000).toISOString(),
+  };
+}
+
+async function loadPinRow(ctx: PinContext, passcodeId: unknown) {
+  if (typeof passcodeId !== "string" || !UUID_PATTERN.test(passcodeId)) {
+    return { error: jsonResponse({ error: "Invalid PIN ID." }, 400) };
+  }
+
+  const { data, error } = await ctx.supabase
+    .from("lock_passcodes")
+    .select(
+      "id, label, passcode, status, guest_id, valid_from, valid_until, tuya_password_id",
+    )
+    .eq("id", passcodeId)
+    .eq("lock_id", ctx.lock.id)
+    .maybeSingle();
+
+  if (error) {
+    console.error("PIN lookup failed:", { code: error.code, message: error.message });
+    return { error: jsonResponse({ error: "Could not load the PIN record." }, 500) };
+  }
+
+  if (!data) {
+    return { error: jsonResponse({ error: "PIN not found for this lock." }, 404) };
+  }
+
+  if (data.status !== "active") {
+    return { error: jsonResponse({ error: "This PIN is no longer active." }, 400) };
+  }
+
+  return { row: data };
+}
+
+async function markPinsRevoked(ctx: PinContext, ids: string[] | null) {
+  let query = ctx.supabase
+    .from("lock_passcodes")
+    .update({ status: "revoked", updated_at: new Date().toISOString() })
+    .eq("lock_id", ctx.lock.id)
+    .eq("status", "active");
+
+  if (ids) query = query.in("id", ids);
+
+  const { error } = await query;
+
+  if (error) {
+    console.error("Marking PINs revoked failed:", {
+      code: error.code,
+      message: error.message,
+    });
+    throw new PinSaveError(
+      "The lock was updated but the PIN records could not be marked revoked. Check permissions on lock_passcodes.",
+    );
+  }
+}
+
+async function handlePinAction(ctx: PinContext): Promise<Response> {
+  try {
+    const { action, body } = ctx;
+
+    if (action === "pin_create") {
+      const window = resolveWindow(body.validFrom, body.validUntil);
+
+      if (!window) {
+        return jsonResponse(
+          { error: "Choose a valid time window (at least 1 minute, at most 1 year)." },
+          400,
+        );
+      }
+
+      const guestId =
+        typeof body.guestId === "string" && UUID_PATTERN.test(body.guestId)
+          ? body.guestId
+          : null;
+
+      const created = await createPinFlow(
+        ctx,
+        cleanLabel(body.label, "Guest PIN"),
+        guestId,
+        window,
+      );
+
+      return jsonResponse({ success: true, action, deviceId: ctx.deviceId, ...created });
+    }
+
+    if (action === "pin_modify") {
+      const { row, error } = await loadPinRow(ctx, body.passcodeId);
+      if (error) return error;
+
+      if (!row.tuya_password_id) {
+        return jsonResponse(
+          { error: "This PIN was never sent to the lock. Revoke it and create a new one." },
+          400,
+        );
+      }
+
+      const window = resolveWindow(
+        body.validFrom ?? row.valid_from,
+        body.validUntil ?? row.valid_until,
+      );
+
+      if (!window) {
+        return jsonResponse(
+          { error: "Choose a valid time window (at least 1 minute, at most 1 year)." },
+          400,
+        );
+      }
+
+      const label = cleanLabel(body.label, row.label || "Guest PIN");
+
+      await modifyTuyaPin(
+        ctx.deviceId,
+        ctx.accessToken,
+        row.tuya_password_id,
+        row.passcode,
+        label,
+        window.effective,
+        window.invalid,
+      );
+
+      const { error: updateError } = await ctx.supabase
+        .from("lock_passcodes")
+        .update({
+          label,
+          valid_from: new Date(window.effective * 1000).toISOString(),
+          valid_until: new Date(window.invalid * 1000).toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", row.id);
+
+      if (updateError) {
+        throw new PinSaveError(
+          "The lock was updated but the PIN record could not be saved.",
+        );
+      }
+
+      return jsonResponse({ success: true, action, deviceId: ctx.deviceId });
+    }
+
+    if (action === "pin_revoke") {
+      const { row, error } = await loadPinRow(ctx, body.passcodeId);
+      if (error) return error;
+
+      if (row.tuya_password_id) {
+        await deleteTuyaPin(ctx.deviceId, ctx.accessToken, row.tuya_password_id);
+      }
+
+      await markPinsRevoked(ctx, [row.id]);
+
+      return jsonResponse({ success: true, action, deviceId: ctx.deviceId });
+    }
+
+    if (action === "pin_regenerate") {
+      const { row, error } = await loadPinRow(ctx, body.passcodeId);
+      if (error) return error;
+
+      const window = resolveWindow(null, row.valid_until);
+
+      if (!window) {
+        return jsonResponse(
+          { error: "This PIN is about to expire or has expired. Create a new PIN instead." },
+          400,
+        );
+      }
+
+      // Create the replacement first so the guest is never left without access.
+      const created = await createPinFlow(
+        ctx,
+        row.label || "Guest PIN",
+        row.guest_id ?? null,
+        window,
+      );
+
+      if (row.tuya_password_id) {
+        await deleteTuyaPin(ctx.deviceId, ctx.accessToken, row.tuya_password_id);
+      }
+
+      await markPinsRevoked(ctx, [row.id]);
+
+      return jsonResponse({ success: true, action, deviceId: ctx.deviceId, ...created });
+    }
+
+    if (action === "pin_reset_all") {
+      await clearTuyaPins(ctx.deviceId, ctx.accessToken);
+      await markPinsRevoked(ctx, null);
+
+      return jsonResponse({ success: true, action, deviceId: ctx.deviceId });
+    }
+
+    return jsonResponse({ error: "Unsupported action." }, 400);
+  } catch (error) {
+    if (error instanceof PinSaveError) {
+      return jsonResponse({ error: error.message }, 500);
+    }
+
+    throw error;
+  }
+}
+
 function tuyaFailureResponse(error: unknown) {
   if (error instanceof TuyaApiError) {
     return jsonResponse(
@@ -565,7 +1046,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "Invalid device ID." }, 400);
     }
 
-    if (!["status", "lock", "unlock"].includes(action)) {
+    if (!["status", "lock", "unlock", ...PIN_ACTIONS].includes(action)) {
       return jsonResponse({ error: "Unsupported action." }, 400);
     }
 
@@ -664,6 +1145,17 @@ Deno.serve(async (req: Request) => {
     // Only use the device ID from the verified database record.
     const verifiedDeviceId = authorizedLock.device_id;
     const accessToken = await getTuyaAccessToken();
+
+    if (PIN_ACTIONS.includes(action)) {
+      return await handlePinAction({
+        action,
+        body: requestBody,
+        supabase,
+        lock: authorizedLock,
+        deviceId: verifiedDeviceId,
+        accessToken,
+      });
+    }
 
     if (action === "status") {
       try {

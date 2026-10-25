@@ -1,4 +1,3 @@
-
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -21,6 +20,13 @@ import {
 import { invokeTuyaLock, summarizeLockStatus } from '../lib/tuya';
 import { useTheme } from '../context/ThemeContext';
 import { APP_NAME } from '../constants';
+
+const PIN_DURATIONS = [
+  { label: '1 hour', hours: 1 },
+  { label: '24 hours', hours: 24 },
+  { label: '7 days', hours: 168 },
+  { label: '30 days', hours: 720 },
+];
 
 const LOCK_COLUMNS = [
   'id',
@@ -58,6 +64,8 @@ export default function LockManagementScreen() {
   const [passcodes, setPasscodes] = useState([]);
   const [newPin, setNewPin] = useState('');
   const [pinBusy, setPinBusy] = useState(false);
+  const [pinLabel, setPinLabel] = useState('');
+  const [pinHours, setPinHours] = useState(24);
   const locksRef = useRef([]);
 
   // Keep the latest lock list available to the background poll without
@@ -179,7 +187,7 @@ export default function LockManagementScreen() {
       } finally {
         pollInProgress = false;
       }
-    }, 1000);
+    }, 8000);
 
     return () => {
       clearInterval(poll);
@@ -388,52 +396,155 @@ export default function LockManagementScreen() {
     }
   };
 
-  const openLockDetails = async (lock) => {
-    setSelectedLock(lock);
-    setNewPin('');
-    const { data, error } = await supabase.from('lock_passcodes')
-      .select('id, label, passcode, status, valid_from, valid_until, created_at, guest_id')
-      .eq('lock_id', lock.id).order('created_at', { ascending: false });
+  const reloadPins = async (lock) => {
+    const { data, error } = await supabase
+      .from('lock_passcodes')
+      .select('id, label, passcode, status, valid_from, valid_until, created_at, guest_id, tuya_password_id')
+      .eq('lock_id', lock.id)
+      .order('created_at', { ascending: false });
+
     if (error) {
       Alert.alert('Unable to load PINs', getSupabaseErrorMessage(error));
       setPasscodes([]);
-    } else setPasscodes(data || []);
+    } else {
+      setPasscodes(data || []);
+    }
   };
 
-  const generatePinRecord = async () => {
-    if (!selectedLock) return;
-    // This creates a database record only. The Tuya lock must separately support
-    // and successfully accept a PIN programming API before this can unlock the door.
-    const pin = String(Math.floor(100000 + Math.random() * 900000));
+  const openLockDetails = async (lock) => {
+    setSelectedLock(lock);
+    setNewPin('');
+    setPinLabel('');
+    setPinHours(24);
+    await reloadPins(lock);
+  };
+
+  const activePins = passcodes.filter(
+    (p) =>
+      p.status === 'active' &&
+      (!p.valid_until || new Date(p.valid_until).getTime() > Date.now())
+  );
+
+  // Runs a PIN action on the Tuya lock through the Edge Function.
+  const runPinAction = async (params, failTitle) => {
+    const deviceId = selectedLock?.device_id || selectedLock?.tuya_device_id;
+
+    if (!deviceId) {
+      Alert.alert('Missing Device ID', 'This lock has no Tuya device ID.');
+      return null;
+    }
+
     setPinBusy(true);
+
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { error } = await supabase.from('lock_passcodes').insert({
-        lock_id: selectedLock.id,
-        property_id: selectedLock.property_id,
-        label: 'Generated PIN (not synced to lock)',
-        passcode: pin,
-        status: 'active',
-        created_at: new Date().toISOString(),
-      });
-      if (error) throw error;
-      setNewPin(pin);
-      await openLockDetails(selectedLock);
-      Alert.alert('PIN record created', 'Saved in Supabase only. It has NOT been programmed into the physical Tuya lock. Do not give this PIN to a guest until lock programming is supported and confirmed.');
+      const result = await invokeTuyaLock({ deviceId, ...params });
+      await reloadPins(selectedLock);
+      return result;
     } catch (e) {
-      Alert.alert('Unable to create PIN record', getSupabaseErrorMessage(e));
-    } finally { setPinBusy(false); }
+      Alert.alert(failTitle, e?.message || getSupabaseErrorMessage(e));
+      return null;
+    } finally {
+      setPinBusy(false);
+    }
   };
 
-  const revokePinRecord = async (pinRow) => {
-    Alert.alert('Reset PIN record?', 'This disables the record in SECURTAP only. It does not remove the PIN from the physical lock.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Disable record', style: 'destructive', onPress: async () => {
-        const { error } = await supabase.from('lock_passcodes').update({ status: 'revoked', updated_at: new Date().toISOString() }).eq('id', pinRow.id);
-        if (error) Alert.alert('Failed', getSupabaseErrorMessage(error));
-        else await openLockDetails(selectedLock);
-      } },
-    ]);
+  const createPin = async () => {
+    const now = Date.now();
+    const result = await runPinAction(
+      {
+        action: 'pin_create',
+        label: pinLabel.trim() || 'Guest PIN',
+        validFrom: new Date(now).toISOString(),
+        validUntil: new Date(now + pinHours * 3600 * 1000).toISOString(),
+      },
+      'Unable to create PIN'
+    );
+
+    if (result?.pin) {
+      setNewPin(result.pin);
+      setPinLabel('');
+    }
+  };
+
+  const extendPin = async (pinRow) => {
+    const base = pinRow.valid_until
+      ? Math.max(new Date(pinRow.valid_until).getTime(), Date.now())
+      : Date.now();
+
+    const result = await runPinAction(
+      {
+        action: 'pin_modify',
+        passcodeId: pinRow.id,
+        validUntil: new Date(base + 24 * 3600 * 1000).toISOString(),
+      },
+      'Unable to extend PIN'
+    );
+
+    if (result?.success) {
+      Alert.alert('PIN updated', 'The new expiry was sent to the lock.');
+    }
+  };
+
+  const regeneratePin = (pinRow) => {
+    Alert.alert(
+      'Generate a new PIN?',
+      `"${pinRow.label}" gets a new PIN with the same expiry. The old PIN stops working.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Generate',
+          onPress: async () => {
+            const result = await runPinAction(
+              { action: 'pin_regenerate', passcodeId: pinRow.id },
+              'Unable to regenerate PIN'
+            );
+
+            if (result?.pin) setNewPin(result.pin);
+          },
+        },
+      ]
+    );
+  };
+
+  const revokePin = (pinRow) => {
+    Alert.alert(
+      'Revoke PIN?',
+      'This deletes the PIN from the lock so it can no longer open the door.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Revoke',
+          style: 'destructive',
+          onPress: async () => {
+            await runPinAction(
+              { action: 'pin_revoke', passcodeId: pinRow.id },
+              'Unable to revoke PIN'
+            );
+          },
+        },
+      ]
+    );
+  };
+
+  const resetAllPins = () => {
+    Alert.alert(
+      'Reset all PINs?',
+      'This clears every temporary PIN on this lock. Fingerprints, cards and the lock\'s own admin code are not affected.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset all',
+          style: 'destructive',
+          onPress: async () => {
+            setNewPin('');
+            await runPinAction(
+              { action: 'pin_reset_all' },
+              'Unable to reset PINs'
+            );
+          },
+        },
+      ]
+    );
   };
 
   const removeLock = (lock) => Alert.alert('Remove lock from SECURTAP?', 'This removes the database record and associated PIN/NFC/fingerprint records according to your foreign-key rules. It does not unpair the lock from Tuya or erase credentials on the physical lock.', [
@@ -631,18 +742,82 @@ export default function LockManagementScreen() {
               <Text style={[styles.modalTitle, { color: colors.text }]}>{selectedLock?.lock_name || 'Lock details'}</Text>
               <TouchableOpacity onPress={() => setSelectedLock(null)}><Ionicons name="close" size={25} color={colors.text} /></TouchableOpacity>
             </View>
-            <Text style={[styles.lockDevice, { color: colors.secondaryText }]}>Device: {selectedLock?.device_id || selectedLock?.tuya_device_id || 'Not configured'}</Text>
-            <Text style={[styles.lockDevice, { color: colors.secondaryText }]}>Status: {selectedLock?.status || 'Unknown'} · Battery: {selectedLock?.battery_level == null ? 'Unknown' : `${selectedLock.battery_level}%`}</Text>
-            <Text style={[styles.sectionHeading, { color: colors.text }]}>PIN records</Text>
-            <Text style={{ color: colors.secondaryText, fontSize: 12, marginBottom: 10 }}>Records below are from Supabase. PIN creation/reset is not yet synced to the physical lock because this project currently only implements Tuya status/lock/unlock actions.</Text>
-            <ScrollView style={{ maxHeight: 180 }}>
-              {passcodes.filter(p => p.status === 'active').map(p => <View key={p.id} style={styles.pinRow}><View style={{ flex: 1 }}><Text style={{ color: colors.text, fontWeight: '700' }}>{p.label}</Text><Text style={{ color: colors.secondaryText }}>{p.passcode} · {p.status}</Text></View><TouchableOpacity onPress={() => revokePinRecord(p)}><Text style={{ color: '#b42318', fontWeight: '700' }}>Reset record</Text></TouchableOpacity></View>)}
-              {passcodes.filter(p => p.status === 'active').length === 0 && <Text style={{ color: colors.secondaryText }}>No active PIN records.</Text>}
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Text style={[styles.lockDevice, { color: colors.secondaryText }]}>Device: {selectedLock?.device_id || selectedLock?.tuya_device_id || 'Not configured'}</Text>
+              <Text style={[styles.lockDevice, { color: colors.secondaryText }]}>Status: {selectedLock?.status || 'Unknown'} · Battery: {selectedLock?.battery_level == null ? 'Unknown' : `${selectedLock.battery_level}%`}</Text>
+
+              <Text style={[styles.sectionHeading, { color: colors.text }]}>New PIN</Text>
+              {newPin ? (
+                <View style={[styles.pinReveal, { borderColor: colors.border }]}>
+                  <Text style={{ color: colors.secondaryText, fontSize: 12 }}>Sent to the lock. Share this PIN with your guest:</Text>
+                  <Text selectable style={[styles.pinValue, { color: colors.text }]}>{newPin}</Text>
+                </View>
+              ) : null}
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.input, color: colors.text, borderColor: colors.border }]}
+                placeholder="Label (e.g. Guest - Room 2)"
+                placeholderTextColor={colors.secondaryText}
+                value={pinLabel}
+                onChangeText={setPinLabel}
+                editable={!pinBusy}
+                maxLength={60}
+              />
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.propertySelector}>
+                {PIN_DURATIONS.map((option) => (
+                  <TouchableOpacity
+                    key={option.hours}
+                    style={[styles.propertyChip, pinHours === option.hours && styles.selectedChip]}
+                    onPress={() => setPinHours(option.hours)}
+                    disabled={pinBusy}
+                  >
+                    <Text style={[styles.propertyChipText, pinHours === option.hours && styles.selectedChipText]}>{option.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <TouchableOpacity style={[styles.registerButton, pinBusy && styles.disabledButton]} onPress={createPin} disabled={pinBusy}>
+                {pinBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.registerButtonText}>Generate PIN and send to lock</Text>}
+              </TouchableOpacity>
+
+              <Text style={[styles.sectionHeading, { color: colors.text }]}>Active PINs</Text>
+              {activePins.length === 0 ? (
+                <Text style={{ color: colors.secondaryText }}>No active PINs.</Text>
+              ) : (
+                activePins.map((p) => (
+                  <View key={p.id} style={[styles.pinRow, { alignItems: 'flex-start' }]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: colors.text, fontWeight: '700' }}>{p.label}</Text>
+                      <Text style={{ color: colors.secondaryText }}>{p.passcode}</Text>
+                      <Text style={{ color: colors.secondaryText, fontSize: 11, marginTop: 2 }}>
+                        {p.tuya_password_id ? 'On lock' : 'Not on lock (old record)'} · until {p.valid_until ? new Date(p.valid_until).toLocaleString() : 'no expiry'}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end', gap: 8 }}>
+                      {p.tuya_password_id ? (
+                        <>
+                          <TouchableOpacity disabled={pinBusy} onPress={() => extendPin(p)}>
+                            <Text style={{ color: colors.text, fontWeight: '700' }}>+24h</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity disabled={pinBusy} onPress={() => regeneratePin(p)}>
+                            <Text style={{ color: colors.text, fontWeight: '700' }}>New PIN</Text>
+                          </TouchableOpacity>
+                        </>
+                      ) : null}
+                      <TouchableOpacity disabled={pinBusy} onPress={() => revokePin(p)}>
+                        <Text style={{ color: '#b42318', fontWeight: '700' }}>Revoke</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))
+              )}
+
+              <TouchableOpacity style={[styles.secondaryAction, { borderColor: '#b42318', marginTop: 16, flex: 0 }]} onPress={resetAllPins} disabled={pinBusy}>
+                <Text style={[styles.secondaryActionText, { color: '#b42318' }]}>Reset all PINs on this lock</Text>
+              </TouchableOpacity>
+
+              <Text style={{ color: colors.secondaryText, fontSize: 11, marginTop: 14 }}>
+                PINs expire on the lock automatically at their end time. NFC card and fingerprint enrollment are not available yet; this screen does not simulate them.
+              </Text>
             </ScrollView>
-            <TouchableOpacity style={styles.registerButton} onPress={generatePinRecord} disabled={pinBusy}>
-              {pinBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.registerButtonText}>Generate PIN record</Text>}
-            </TouchableOpacity>
-            <Text style={{ color: colors.secondaryText, fontSize: 11, marginTop: 9 }}>NFC/fingerprint enrollment and five-attempt hardware cooldown need confirmed X6PRO API support. This screen does not simulate successful enrollment.</Text>
           </View>
         </View>
       </Modal>
@@ -927,6 +1102,8 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   sectionHeading: { fontSize: 15, fontWeight: '800', marginTop: 18, marginBottom: 8 },
+  pinReveal: { borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 12, alignItems: 'center' },
+  pinValue: { fontSize: 30, fontWeight: '800', letterSpacing: 4, marginTop: 4 },
   pinRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#999' },
   label: {
     fontSize: 13,

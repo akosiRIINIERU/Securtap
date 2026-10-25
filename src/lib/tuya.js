@@ -1,4 +1,3 @@
-
 import { supabase } from './supabase';
 
 function formatTuyaFunctionError(parsed, fallbackError, httpStatus) {
@@ -59,6 +58,7 @@ async function readInvokeError(error) {
 export async function invokeTuyaLock({
   action = 'status',
   deviceId,
+  ...params
 } = {}) {
   try {
     // 1. Check the Supabase session.
@@ -82,6 +82,7 @@ export async function invokeTuyaLock({
       'tuya-lock-status',
       {
         body: {
+          ...params,
           action,
           ...(deviceId ? { deviceId } : {}),
         },
