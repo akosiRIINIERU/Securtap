@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { Buffer } from "node:buffer";
 import { createCipheriv, createDecipheriv, randomInt } from "node:crypto";
+import { sendNotices, type Notice } from "../_shared/notify.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -13,6 +14,8 @@ const encoder = new TextEncoder();
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
 const TUYA_ACCESS_ID = Deno.env.get("TUYA_ACCESS_ID")!;
 const TUYA_ACCESS_SECRET = Deno.env.get("TUYA_ACCESS_SECRET")!;
@@ -1264,371 +1267,70 @@ async function handlePinAction(ctx: PinContext): Promise<Response> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// NFC card and fingerprint enrollment (Tuya "unlocking method" APIs)
-//
-// Flow: create a Tuya device user -> put the lock into enrollment mode for
-// that user -> the person taps the card / scans the finger ON THE LOCK ->
-// the app polls credential_check, which saves the record only after Tuya
-// reports the new credential on the lock.
-// ---------------------------------------------------------------------------
+// Records a PIN action on the dashboard and notifies the property admins.
+// The PIN itself is never written to a notification or log.
+async function recordPinActivity(input: {
+  action: string;
+  body: any;
+  lockId: string;
+  propertyId: string | null;
+  unitId: string | null;
+  actorId: string;
+  recipients: string[];
+}) {
+  if (!SUPABASE_SERVICE_ROLE_KEY) return;
 
-const CREDENTIAL_ACTIONS = [
-  "credential_start",
-  "credential_check",
-  "credential_cancel",
-  "credential_revoke",
-];
+  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 
-const CREDENTIAL_TYPES: Record<
-  string,
-  { table: string; nameColumn: string; defaultName: string }
-> = {
-  card: {
-    table: "nfc_cards",
-    nameColumn: "card_name",
-    defaultName: "NFC card",
-  },
-  fingerprint: {
-    table: "fingerprints",
-    nameColumn: "fingerprint_name",
-    defaultName: "Fingerprint",
-  },
-};
+  const { data: lock } = await admin
+    .from("smart_locks")
+    .select("lock_name")
+    .eq("id", input.lockId)
+    .maybeSingle();
 
-const TUYA_USER_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+  const lockName = lock?.lock_name || "Your lock";
+  const label =
+    typeof input.body?.label === "string" && input.body.label.trim()
+      ? ` "${input.body.label.trim().slice(0, 60)}"`
+      : "";
 
-class CredentialSaveError extends Error {}
+  const texts: Record<string, { type: string; title: string; body: string }> = {
+    pin_create: { type: "pin_created", title: "PIN created", body: `A new PIN${label} was added to ${lockName}.` },
+    pin_modify: { type: "pin_updated", title: "PIN updated", body: `A PIN on ${lockName} was changed.` },
+    pin_revoke: { type: "pin_revoked", title: "PIN revoked", body: `A PIN was deleted from ${lockName}.` },
+    pin_regenerate: { type: "pin_regenerated", title: "PIN regenerated", body: `A PIN on ${lockName} was replaced with a new one.` },
+    pin_reset_all: { type: "pin_reset", title: "All PINs reset", body: `Every PIN on ${lockName} was deleted.` },
+  };
 
-function lockUserPath(deviceId: string, tuyaUserId: string): string {
-  // user_type 2 = not a home user (what Tuya specifies for Wi-Fi locks).
-  return `/v1.0/devices/${encodeDeviceId(deviceId)}/door-lock/user-types/2/users/${encodeURIComponent(tuyaUserId)}`;
-}
+  const text = texts[input.action];
+  if (!text) return;
 
-async function deleteTuyaUser(
-  deviceId: string,
-  accessToken: string,
-  tuyaUserId: string,
-) {
-  try {
-    await tuyaRequest(
-      "DELETE",
-      `/v1.0/devices/${encodeDeviceId(deviceId)}/users/${encodeURIComponent(tuyaUserId)}`,
-      accessToken,
-    );
-  } catch (error) {
-    console.warn("Could not delete Tuya lock user:", {
-      code: error instanceof TuyaApiError ? error.code : null,
-      message: error instanceof TuyaApiError ? error.tuyaMessage : null,
-    });
+  const { error } = await admin.from("activity_logs").insert({
+    admin_id: input.actorId,
+    property_id: input.propertyId,
+    unit_id: input.unitId,
+    lock_id: input.lockId,
+    activity_type: text.type,
+    title: text.title,
+    description: text.body,
+    authentication_method: "pin",
+    status: "success",
+  });
+
+  if (error) {
+    console.error("Saving PIN activity failed:", { code: error.code, message: error.message });
   }
-}
 
-async function deleteTuyaKey(
-  deviceId: string,
-  accessToken: string,
-  tuyaUserId: string,
-  unlockType: string,
-  unlockNo: number,
-) {
-  await tuyaRequest(
-    "DELETE",
-    `${lockUserPath(deviceId, tuyaUserId)}/unlock-types/${unlockType}/keys/${unlockNo}`,
-    accessToken,
-  );
-}
+  const notices: Notice[] = input.recipients.map((adminId) => ({
+    adminId,
+    type: text.type,
+    title: text.title,
+    body: text.body,
+  }));
 
-async function handleCredentialAction(ctx: PinContext): Promise<Response> {
-  try {
-    const { action, body } = ctx;
-
-    const type = typeof body.type === "string" ? body.type : "";
-    const config = CREDENTIAL_TYPES[type];
-
-    if (!config && action !== "credential_revoke") {
-      return jsonResponse({ error: "Unsupported credential type." }, 400);
-    }
-
-    if (action === "credential_start") {
-      const name = cleanLabel(body.name, config.defaultName);
-
-      // Tuya rejects duplicate user names on one device, so make each unique.
-      const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 4);
-      const nickName = `${name.slice(0, 13)}-${suffix}`;
-
-      const created = await tuyaRequest(
-        "POST",
-        `/v1.0/devices/${encodeDeviceId(ctx.deviceId)}/user`,
-        ctx.accessToken,
-        { nick_name: nickName, sex: 1 },
-      );
-
-      // Tuya's reply shape varies by lock type, so accept the common forms.
-      const result = created.result;
-      const rawUserId =
-        typeof result === "string" || typeof result === "number"
-          ? result
-          : result?.user_id ?? result?.userId ?? result?.id;
-
-      const tuyaUserId = String(rawUserId ?? "");
-
-      if (!TUYA_USER_ID_PATTERN.test(tuyaUserId)) {
-        console.error("Unexpected create-user response:", JSON.stringify(result));
-        throw new Error(
-          `Tuya did not return a lock user ID (reply: ${JSON.stringify(result)?.slice(0, 150)}).`,
-        );
-      }
-
-      const enterEnrollment = () =>
-        tuyaRequest(
-          "PUT",
-          `/v1.0/devices/${encodeDeviceId(ctx.deviceId)}/door-lock/actions/entry`,
-          ctx.accessToken,
-          {
-            user_id: tuyaUserId,
-            user_type: 2,
-            unlock_type: type,
-          },
-        );
-
-      try {
-        try {
-          await enterEnrollment();
-        } catch (error) {
-          // 2328 = an earlier enrollment is still pending on the lock.
-          // Cancel it, give the lock a moment, then retry once.
-          if (
-            error instanceof TuyaApiError &&
-            numericTuyaCode(error.code) === 2328
-          ) {
-            for (const staleType of ["card", "fingerprint"]) {
-              try {
-                await tuyaRequest(
-                  "PUT",
-                  `/v1.0/devices/${encodeDeviceId(ctx.deviceId)}/door-lock/unlock-types/${staleType}/actions/cancel`,
-                  ctx.accessToken,
-                  {},
-                );
-              } catch (cancelError) {
-                console.warn("Cancel stale enrollment failed:", {
-                  type: staleType,
-                  code:
-                    cancelError instanceof TuyaApiError
-                      ? cancelError.code
-                      : null,
-                });
-              }
-            }
-
-            await new Promise((resolve) => setTimeout(resolve, 3000));
-            await enterEnrollment();
-          } else {
-            throw error;
-          }
-        }
-      } catch (error) {
-        await deleteTuyaUser(ctx.deviceId, ctx.accessToken, tuyaUserId);
-        throw error;
-      }
-
-      return jsonResponse({
-        success: true,
-        action,
-        deviceId: ctx.deviceId,
-        tuyaUserId,
-      });
-    }
-
-    if (action === "credential_check") {
-      const tuyaUserId =
-        typeof body.tuyaUserId === "string" ? body.tuyaUserId : "";
-
-      if (!TUYA_USER_ID_PATTERN.test(tuyaUserId)) {
-        return jsonResponse({ error: "Invalid enrollment ID." }, 400);
-      }
-
-      // Already saved by an earlier check.
-      const { data: existing } = await ctx.supabase
-        .from(config.table)
-        .select("id")
-        .eq("lock_id", ctx.lock.id)
-        .eq("tuya_user_id", tuyaUserId)
-        .maybeSingle();
-
-      if (existing) {
-        return jsonResponse({
-          success: true,
-          action,
-          enrolled: true,
-          credentialId: existing.id,
-        });
-      }
-
-      const keys = await tuyaRequest(
-        "GET",
-        `${lockUserPath(ctx.deviceId, tuyaUserId)}/assigned-keys?unlock_type=${type}`,
-        ctx.accessToken,
-      );
-
-      const list: any[] = Array.isArray(keys.result?.unlock_keys)
-        ? keys.result.unlock_keys
-        : [];
-
-      const key =
-        list.find((item) => item?.unlock_type === type) ?? list[0];
-
-      if (!key || key.unlock_no === undefined || key.unlock_no === null) {
-        return jsonResponse({ success: true, action, enrolled: false });
-      }
-
-      const unlockNo = Number(key.unlock_no);
-      const name = cleanLabel(body.name, config.defaultName);
-      const guestId =
-        typeof body.guestId === "string" && UUID_PATTERN.test(body.guestId)
-          ? body.guestId
-          : null;
-
-      const { data: saved, error } = await ctx.supabase
-        .from(config.table)
-        .insert({
-          property_id: ctx.lock.property_id,
-          unit_id: ctx.lock.unit_id ?? null,
-          lock_id: ctx.lock.id,
-          guest_id: guestId,
-          [config.nameColumn]: name,
-          status: "active",
-          registered_at: new Date().toISOString(),
-          tuya_user_id: tuyaUserId,
-          tuya_unlock_no: unlockNo,
-        })
-        .select("id")
-        .single();
-
-      if (error) {
-        console.error("Saving credential failed:", {
-          code: error.code,
-          message: error.message,
-        });
-
-        // Do not leave a working credential the app does not know about.
-        try {
-          await deleteTuyaKey(
-            ctx.deviceId,
-            ctx.accessToken,
-            tuyaUserId,
-            type,
-            unlockNo,
-          );
-        } catch (cleanupError) {
-          console.error("Could not remove unsaved credential:", cleanupError);
-        }
-        await deleteTuyaUser(ctx.deviceId, ctx.accessToken, tuyaUserId);
-
-        throw new CredentialSaveError(
-          `It was enrolled but could not be saved, so it was removed from the lock (${error.message}).`,
-        );
-      }
-
-      return jsonResponse({
-        success: true,
-        action,
-        enrolled: true,
-        credentialId: saved.id,
-      });
-    }
-
-    if (action === "credential_cancel") {
-      const tuyaUserId =
-        typeof body.tuyaUserId === "string" ? body.tuyaUserId : "";
-
-      if (!TUYA_USER_ID_PATTERN.test(tuyaUserId)) {
-        return jsonResponse({ error: "Invalid enrollment ID." }, 400);
-      }
-
-      try {
-        await tuyaRequest(
-          "PUT",
-          `/v1.0/devices/${encodeDeviceId(ctx.deviceId)}/door-lock/unlock-types/${type}/actions/cancel`,
-          ctx.accessToken,
-          {},
-        );
-      } catch (error) {
-        console.warn("Cancel enrollment failed:", {
-          code: error instanceof TuyaApiError ? error.code : null,
-          message: error instanceof TuyaApiError ? error.tuyaMessage : null,
-        });
-      }
-
-      await deleteTuyaUser(ctx.deviceId, ctx.accessToken, tuyaUserId);
-
-      return jsonResponse({ success: true, action, deviceId: ctx.deviceId });
-    }
-
-    if (action === "credential_revoke") {
-      const credentialType = CREDENTIAL_TYPES[type];
-
-      if (!credentialType) {
-        return jsonResponse({ error: "Unsupported credential type." }, 400);
-      }
-
-      const credentialId = body.credentialId;
-
-      if (typeof credentialId !== "string" || !UUID_PATTERN.test(credentialId)) {
-        return jsonResponse({ error: "Invalid credential ID." }, 400);
-      }
-
-      const { data: row, error: loadError } = await ctx.supabase
-        .from(credentialType.table)
-        .select("id, status, tuya_user_id, tuya_unlock_no")
-        .eq("id", credentialId)
-        .eq("lock_id", ctx.lock.id)
-        .maybeSingle();
-
-      if (loadError) {
-        return jsonResponse({ error: "Could not load the record." }, 500);
-      }
-
-      if (!row) {
-        return jsonResponse({ error: "Record not found for this lock." }, 404);
-      }
-
-      if (row.status === "revoked") {
-        return jsonResponse({ error: "Already revoked." }, 400);
-      }
-
-      if (row.tuya_user_id && row.tuya_unlock_no !== null) {
-        await deleteTuyaKey(
-          ctx.deviceId,
-          ctx.accessToken,
-          row.tuya_user_id,
-          type,
-          Number(row.tuya_unlock_no),
-        );
-        await deleteTuyaUser(ctx.deviceId, ctx.accessToken, row.tuya_user_id);
-      }
-
-      const { error: updateError } = await ctx.supabase
-        .from(credentialType.table)
-        .update({ status: "revoked" })
-        .eq("id", row.id);
-
-      if (updateError) {
-        throw new CredentialSaveError(
-          `It was removed from the lock but the record could not be updated (${updateError.message}).`,
-        );
-      }
-
-      return jsonResponse({ success: true, action, deviceId: ctx.deviceId });
-    }
-
-    return jsonResponse({ error: "Unsupported action." }, 400);
-  } catch (error) {
-    if (error instanceof CredentialSaveError) {
-      return jsonResponse({ error: error.message }, 500);
-    }
-
-    throw error;
-  }
+  await sendNotices(admin, notices);
 }
 
 function tuyaFailureResponse(error: unknown) {
@@ -1735,10 +1437,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "Invalid device ID." }, 400);
     }
 
-    if (
-      !["status", "lock", "unlock", ...PIN_ACTIONS, ...CREDENTIAL_ACTIONS]
-        .includes(action)
-    ) {
+    if (!["status", "lock", "unlock", ...PIN_ACTIONS].includes(action)) {
       return jsonResponse({ error: "Unsupported action." }, 400);
     }
 
@@ -1838,19 +1537,8 @@ Deno.serve(async (req: Request) => {
     const verifiedDeviceId = authorizedLock.device_id;
     const accessToken = await getTuyaAccessToken();
 
-    if (CREDENTIAL_ACTIONS.includes(action)) {
-      return await handleCredentialAction({
-        action,
-        body: requestBody,
-        supabase,
-        lock: authorizedLock,
-        deviceId: verifiedDeviceId,
-        accessToken,
-      });
-    }
-
     if (PIN_ACTIONS.includes(action)) {
-      return await handlePinAction({
+      const pinResponse = await handlePinAction({
         action,
         body: requestBody,
         supabase,
@@ -1858,6 +1546,32 @@ Deno.serve(async (req: Request) => {
         deviceId: verifiedDeviceId,
         accessToken,
       });
+
+      if (pinResponse.ok) {
+        try {
+          const owner = (properties ?? []).find(
+            (property) => property.id === authorizedLock.property_id,
+          );
+
+          await recordPinActivity({
+            action,
+            body: requestBody,
+            lockId: authorizedLock.id,
+            propertyId: authorizedLock.property_id,
+            unitId: authorizedLock.unit_id ?? null,
+            actorId: user.id,
+            recipients: [
+              ...new Set(
+                [owner?.created_by, owner?.admin_id, user.id].filter(Boolean),
+              ),
+            ] as string[],
+          });
+        } catch (activityError) {
+          console.error("Recording PIN activity failed:", activityError);
+        }
+      }
+
+      return pinResponse;
     }
 
     if (action === "status") {

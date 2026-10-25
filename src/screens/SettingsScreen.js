@@ -15,6 +15,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as LocalAuthentication from 'expo-local-authentication';
+import { registerForPush, unregisterPush } from '../lib/notifications';
 
 import {
   supabase,
@@ -584,6 +585,12 @@ export default function SettingsScreen({ onLogout }) {
                     'notifications',
                     value
                   );
+
+                  if (value) {
+                    registerForPush(user?.id);
+                  } else {
+                    unregisterPush();
+                  }
                 }}
               />
             }

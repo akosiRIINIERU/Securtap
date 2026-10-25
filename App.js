@@ -4,6 +4,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import LoginScreen from './src/screens/LoginScreen';
@@ -18,6 +19,7 @@ import SignUpScreen from './src/screens/SignUpScreen';
 import EntryLogsScreen from './src/screens/EntryLogsScreen';
 import { ThemeProvider } from './src/context/ThemeContext';
 import { supabase } from './src/lib/supabase';
+import { registerForPush, unregisterPush } from './src/lib/notifications';
 import { APP_NAME } from './src/constants';
 
 const Tab = createBottomTabNavigator();
@@ -253,6 +255,27 @@ export default function App() {
     };
   }, []);
 
+  // Register this phone for push notifications once signed in.
+  useEffect(() => {
+    const userId = session?.user?.id;
+
+    if (!userId || isPasswordRecovery) {
+      return;
+    }
+
+    (async () => {
+      try {
+        const enabled = await AsyncStorage.getItem('@securtap_notifications');
+
+        if (enabled !== 'false') {
+          await registerForPush(userId);
+        }
+      } catch (error) {
+        console.warn('Push setup failed:', error?.message);
+      }
+    })();
+  }, [session?.user?.id, isPasswordRecovery]);
+
   const handlePasswordUpdated = async () => {
     setIsPasswordRecovery(false);
 
@@ -267,6 +290,8 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      await unregisterPush();
+
       const { error } = await supabase.auth.signOut();
 
       if (error) {

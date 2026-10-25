@@ -1,3 +1,4 @@
+
 import { supabase } from './supabase';
 
 function formatTuyaFunctionError(parsed, fallbackError, httpStatus) {

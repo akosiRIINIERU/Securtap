@@ -1,3 +1,4 @@
+
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -66,11 +67,6 @@ export default function LockManagementScreen() {
   const [pinBusy, setPinBusy] = useState(false);
   const [pinLabel, setPinLabel] = useState('');
   const [pinHours, setPinHours] = useState(24);
-  const [nfcCards, setNfcCards] = useState([]);
-  const [fingerprints, setFingerprints] = useState([]);
-  const [credName, setCredName] = useState('');
-  const [credBusy, setCredBusy] = useState(false);
-  const [enroll, setEnroll] = useState(null);
   const locksRef = useRef([]);
 
   // Keep the latest lock list available to the background poll without
@@ -416,38 +412,12 @@ export default function LockManagementScreen() {
     }
   };
 
-  const reloadCredentials = async (lock) => {
-    const [cards, prints] = await Promise.all([
-      supabase
-        .from('nfc_cards')
-        .select('id, card_name, status, registered_at, tuya_unlock_no')
-        .eq('lock_id', lock.id)
-        .order('registered_at', { ascending: false }),
-      supabase
-        .from('fingerprints')
-        .select('id, fingerprint_name, status, registered_at, tuya_unlock_no')
-        .eq('lock_id', lock.id)
-        .order('registered_at', { ascending: false }),
-    ]);
-
-    if (cards.error || prints.error) {
-      Alert.alert(
-        'Unable to load cards and fingerprints',
-        getSupabaseErrorMessage(cards.error || prints.error)
-      );
-    }
-
-    setNfcCards(cards.data || []);
-    setFingerprints(prints.data || []);
-  };
-
   const openLockDetails = async (lock) => {
     setSelectedLock(lock);
     setNewPin('');
     setPinLabel('');
     setPinHours(24);
-    setCredName('');
-    await Promise.all([reloadPins(lock), reloadCredentials(lock)]);
+    await reloadPins(lock);
   };
 
   const activePins = passcodes.filter(
@@ -623,165 +593,8 @@ export default function LockManagementScreen() {
     );
   };
 
-  const cancelEnroll = async (current, reason = 'cancelled') => {
-    if (!current) return;
-
-    setEnroll(null);
-
-    try {
-      await invokeTuyaLock({
-        action: 'credential_cancel',
-        deviceId: current.deviceId,
-        type: current.type,
-        tuyaUserId: current.tuyaUserId,
-      });
-    } catch (e) {
-      console.warn('Cancel enrollment failed:', e?.message);
-    }
-
-    if (reason === 'timeout') {
-      Alert.alert(
-        'Enrollment timed out',
-        'The lock did not confirm a new card or fingerprint in time. Try again, and touch the keypad first so the lock is awake.'
-      );
-    }
-  };
-
-  const closeDetails = async () => {
-    if (enroll) await cancelEnroll(enroll);
+  const closeDetails = () => {
     setSelectedLock(null);
-  };
-
-  const startEnroll = async (type) => {
-    const deviceId = selectedLock?.device_id || selectedLock?.tuya_device_id;
-
-    if (!deviceId) {
-      Alert.alert('Missing Device ID', 'This lock has no Tuya device ID.');
-      return;
-    }
-
-    const name = credName.trim() || (type === 'card' ? 'NFC card' : 'Fingerprint');
-
-    setCredBusy(true);
-
-    try {
-      const result = await invokeTuyaLock({
-        action: 'credential_start',
-        deviceId,
-        type,
-        name,
-      });
-
-      setEnroll({
-        type,
-        name,
-        deviceId,
-        tuyaUserId: result.tuyaUserId,
-        lock: selectedLock,
-        deadline: Date.now() + (type === 'card' ? 90000 : 150000),
-      });
-      setCredName('');
-    } catch (e) {
-      Alert.alert(
-        'Unable to start enrollment',
-        e?.message || getSupabaseErrorMessage(e)
-      );
-    } finally {
-      setCredBusy(false);
-    }
-  };
-
-  // While enrolling, ask Tuya every 3 seconds whether the lock has confirmed
-  // the new credential. The record is saved only after the lock confirms it.
-  useEffect(() => {
-    if (!enroll) return undefined;
-
-    let stopped = false;
-    let inFlight = false;
-
-    const timer = setInterval(async () => {
-      if (stopped || inFlight) return;
-
-      if (Date.now() > enroll.deadline) {
-        stopped = true;
-        clearInterval(timer);
-        await cancelEnroll(enroll, 'timeout');
-        return;
-      }
-
-      inFlight = true;
-
-      try {
-        const result = await invokeTuyaLock({
-          action: 'credential_check',
-          deviceId: enroll.deviceId,
-          type: enroll.type,
-          tuyaUserId: enroll.tuyaUserId,
-          name: enroll.name,
-        });
-
-        if (result?.enrolled && !stopped) {
-          stopped = true;
-          clearInterval(timer);
-          setEnroll(null);
-          await reloadCredentials(enroll.lock);
-          Alert.alert(
-            enroll.type === 'card' ? 'NFC card added' : 'Fingerprint added',
-            `${enroll.name} was confirmed by the lock and saved.`
-          );
-        }
-      } catch (e) {
-        console.warn('Enrollment check failed:', e?.message);
-      } finally {
-        inFlight = false;
-      }
-    }, 3000);
-
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enroll]);
-
-  const revokeCredential = (type, row) => {
-    const label = type === 'card' ? 'NFC card' : 'fingerprint';
-    const name = type === 'card' ? row.card_name : row.fingerprint_name;
-
-    Alert.alert(
-      `Revoke ${label}?`,
-      `"${name}" is deleted from the lock and can no longer open the door.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Revoke',
-          style: 'destructive',
-          onPress: async () => {
-            const deviceId =
-              selectedLock?.device_id || selectedLock?.tuya_device_id;
-
-            setCredBusy(true);
-
-            try {
-              await invokeTuyaLock({
-                action: 'credential_revoke',
-                deviceId,
-                type,
-                credentialId: row.id,
-              });
-              await reloadCredentials(selectedLock);
-            } catch (e) {
-              Alert.alert(
-                `Unable to revoke ${label}`,
-                e?.message || getSupabaseErrorMessage(e)
-              );
-            } finally {
-              setCredBusy(false);
-            }
-          },
-        },
-      ]
-    );
   };
 
   const removeLock = (lock) => Alert.alert('Remove lock from SECURTAP?', 'This removes the database record and associated PIN/NFC/fingerprint records according to your foreign-key rules. It does not unpair the lock from Tuya or erase credentials on the physical lock.', [
@@ -1052,81 +865,8 @@ export default function LockManagementScreen() {
                 <Text style={[styles.secondaryActionText, { color: '#b42318' }]}>Reset all PINs on this lock</Text>
               </TouchableOpacity>
 
-              <Text style={[styles.sectionHeading, { color: colors.text }]}>NFC cards and fingerprints</Text>
-              {enroll ? (
-                <View style={[styles.pinReveal, { borderColor: colors.border }]}>
-                  <ActivityIndicator color={colors.text} />
-                  <Text style={{ color: colors.text, fontWeight: '700', marginTop: 8, textAlign: 'center' }}>
-                    {enroll.type === 'card' ? 'Tap the card on the lock now' : 'Scan your finger on the lock now'}
-                  </Text>
-                  <Text style={{ color: colors.secondaryText, fontSize: 12, marginTop: 4, textAlign: 'center' }}>
-                    {enroll.type === 'card'
-                      ? 'Hold the card against the lock\'s card reader.'
-                      : 'Place and lift the same finger on the sensor until the lock confirms (usually 4 to 6 times).'}
-                    {' '}Waiting for the lock to confirm. If nothing happens, touch the keypad to wake it.
-                  </Text>
-                  <TouchableOpacity
-                    style={[styles.secondaryAction, { flex: 0, marginTop: 12, paddingHorizontal: 18 }]}
-                    onPress={() => cancelEnroll(enroll)}
-                  >
-                    <Text style={styles.secondaryActionText}>Cancel</Text>
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <>
-                  <TextInput
-                    style={[styles.input, { backgroundColor: colors.input, color: colors.text, borderColor: colors.border }]}
-                    placeholder="Name (e.g. Maria - card)"
-                    placeholderTextColor={colors.secondaryText}
-                    value={credName}
-                    onChangeText={setCredName}
-                    editable={!credBusy}
-                    maxLength={40}
-                  />
-                  <View style={styles.actionRow}>
-                    <TouchableOpacity style={[styles.primaryAction, credBusy && styles.disabledButton]} onPress={() => startEnroll('card')} disabled={credBusy}>
-                      <Text style={styles.primaryActionText}>Add NFC card</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[styles.primaryAction, credBusy && styles.disabledButton]} onPress={() => startEnroll('fingerprint')} disabled={credBusy}>
-                      <Text style={styles.primaryActionText}>Add fingerprint</Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              )}
-
-              {[
-                { type: 'card', title: 'NFC cards', rows: nfcCards, nameKey: 'card_name' },
-                { type: 'fingerprint', title: 'Fingerprints', rows: fingerprints, nameKey: 'fingerprint_name' },
-              ].map((group) => {
-                const visible = group.rows.filter((row) => row.status !== 'revoked');
-
-                return (
-                  <View key={group.type}>
-                    <Text style={[styles.sectionHeading, { color: colors.text }]}>{group.title}</Text>
-                    {visible.length === 0 ? (
-                      <Text style={{ color: colors.secondaryText }}>None registered.</Text>
-                    ) : (
-                      visible.map((row) => (
-                        <View key={row.id} style={styles.pinRow}>
-                          <View style={{ flex: 1 }}>
-                            <Text style={{ color: colors.text, fontWeight: '700' }}>{row[group.nameKey]}</Text>
-                            <Text style={{ color: colors.secondaryText, fontSize: 11 }}>
-                              {row.tuya_unlock_no == null ? 'Not on lock (old record)' : 'On lock'}
-                              {row.registered_at ? ` · added ${new Date(row.registered_at).toLocaleDateString()}` : ''}
-                            </Text>
-                          </View>
-                          <TouchableOpacity disabled={credBusy} onPress={() => revokeCredential(group.type, row)}>
-                            <Text style={{ color: '#b42318', fontWeight: '700' }}>Revoke</Text>
-                          </TouchableOpacity>
-                        </View>
-                      ))
-                    )}
-                  </View>
-                );
-              })}
-
               <Text style={{ color: colors.secondaryText, fontSize: 11, marginTop: 14 }}>
-                PINs expire on the lock automatically at their end time. Cards and fingerprints stay valid until you revoke them. A card or fingerprint is only saved after the lock confirms it.
+                PINs expire on the lock automatically at their end time. Cards and fingerprints are added on the lock itself.
               </Text>
             </ScrollView>
           </View>

@@ -279,6 +279,92 @@ export default function DashboardScreen() {
 
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>
+              Devices
+            </Text>
+          </View>
+
+          {locks.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyText}>
+                No smart locks yet.
+              </Text>
+            </View>
+          ) : (
+            locks.map((lock) => {
+              const level = lock.battery_level;
+              const color =
+                level == null
+                  ? '#999'
+                  : level <= 10
+                    ? '#b42318'
+                    : level <= 20
+                      ? '#d97706'
+                      : '#1a7f37';
+              const batteryIcon =
+                level == null
+                  ? 'battery-dead-outline'
+                  : level <= 20
+                    ? 'battery-dead'
+                    : level <= 60
+                      ? 'battery-half'
+                      : 'battery-full';
+
+              return (
+                <View key={lock.id} style={styles.activityCard}>
+                  <View style={styles.activityIcon}>
+                    <Ionicons
+                      name="lock-closed-outline"
+                      size={20}
+                      color="#111"
+                    />
+                  </View>
+
+                  <View style={styles.activityInfo}>
+                    <Text style={styles.activityTitle}>
+                      {lock.lock_name || lock.device_name || 'Smart lock'}
+                    </Text>
+
+                    <Text style={styles.activityDescription}>
+                      {properties.find((item) => item.id === lock.property_id)
+                        ?.name || 'Property'}
+                    </Text>
+                  </View>
+
+                  <View style={styles.batteryBox}>
+                    <View style={styles.batteryRow}>
+                      <Ionicons
+                        name={batteryIcon}
+                        size={20}
+                        color={color}
+                      />
+
+                      <Text style={[styles.batteryText, { color }]}>
+                        {level == null ? '--' : `${level}%`}
+                      </Text>
+                    </View>
+
+                    {level != null ? (
+                      <View style={styles.batteryTrack}>
+                        <View
+                          style={[
+                            styles.batteryFill,
+                            { width: `${level}%`, backgroundColor: color },
+                          ]}
+                        />
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+              );
+            })
+          )}
+
+        </View>
+
+        <View style={styles.section}>
+
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>
               Recent Activities
             </Text>
           </View>
@@ -586,6 +672,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#777',
     marginTop: 3,
+  },
+
+  batteryBox: {
+    alignItems: 'flex-end',
+    minWidth: 62,
+  },
+
+  batteryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  batteryText: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginLeft: 4,
+  },
+
+  batteryTrack: {
+    width: 54,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#ddd',
+    marginTop: 6,
+    overflow: 'hidden',
+  },
+
+  batteryFill: {
+    height: 5,
+    borderRadius: 3,
   },
 
   emptyCard: {
