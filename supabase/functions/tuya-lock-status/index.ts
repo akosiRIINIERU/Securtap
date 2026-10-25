@@ -103,6 +103,10 @@ function describeTuyaError(error: TuyaApiError): string {
     return "Tuya IoT Core has no space permission for this lock. In Cloud > Development > your project > Devices, transfer the lock into a space that belongs to this project, then retry. Linked Smart Life devices still need that space assignment for v2 APIs.";
   }
 
+  if (code === 2328) {
+    return "The lock is still busy with an earlier enrollment. Wait about a minute, touch the lock to wake it, and try again.";
+  }
+
   if (code === 2010) {
     return "Tuya could not find this device ID in the configured data center.";
   }
@@ -526,13 +530,13 @@ function aesAlgorithm(key: Buffer): string {
 // then AES/ECB-encrypt the PIN with the resulting key, output as hex.
 function encryptPinWithTicket(pin: string, ticketKeyHex: string): string {
   const secretKey = Buffer.from(TUYA_ACCESS_SECRET, "utf8");
-  const decipher = createDecipheriv(aesAlgorithm(secretKey), secretKey, null);
+  const decipher = createDecipheriv(aesAlgorithm(secretKey), secretKey, Buffer.alloc(0));
   const rawKey = Buffer.concat([
     decipher.update(Buffer.from(ticketKeyHex, "hex")),
     decipher.final(),
   ]);
 
-  const cipher = createCipheriv(aesAlgorithm(rawKey), rawKey, null);
+  const cipher = createCipheriv(aesAlgorithm(rawKey), rawKey, Buffer.alloc(0));
   return Buffer.concat([
     cipher.update(pin, "utf8"),
     cipher.final(),
@@ -688,7 +692,7 @@ type PinContext = {
   action: string;
   body: any;
   supabase: any;
-  lock: { id: string; property_id: string | null };
+  lock: { id: string; property_id: string | null; unit_id?: string | null };
   deviceId: string;
   accessToken: string;
 };
@@ -750,6 +754,7 @@ async function createPinFlow(
 
   return {
     pin,
+    tuyaPasswordId,
     passcodeId: data.id as string,
     validFrom: new Date(window.effective * 1000).toISOString(),
     validUntil: new Date(window.invalid * 1000).toISOString(),
@@ -808,6 +813,221 @@ async function markPinsRevoked(ctx: PinContext, ids: string[] | null) {
   }
 }
 
+async function listTuyaPins(deviceId: string, accessToken: string) {
+  const data = await tuyaRequest(
+    "GET",
+    `/v1.0/devices/${encodeDeviceId(deviceId)}/door-lock/temp-passwords`,
+    accessToken,
+  );
+
+  const result = data.result;
+  const list: any[] = Array.isArray(result)
+    ? result
+    : Array.isArray(result?.records)
+      ? result.records
+      : [];
+
+  return list;
+}
+
+// Wi-Fi lock phases: 0 deleted, 1 to be sent, 2 sent, 3 to be deleted.
+// (Zigbee uses 4 = deleted and 5 = failed, so treat those as gone too.)
+const PHASE_GONE = [0, 4, 5];
+const PHASE_PENDING_DELETE = 3;
+
+// Lists the PINs that really exist on the lock and deletes every one except
+// `keepTuyaId`, then lists again to verify. This also removes PINs this app
+// has no record of.
+async function purgeLockPins(ctx: PinContext, keepTuyaId: string | null) {
+  let pins: any[] = [];
+  let listFailed = false;
+
+  try {
+    pins = await listTuyaPins(ctx.deviceId, ctx.accessToken);
+  } catch (error) {
+    listFailed = true;
+    console.error("Listing PINs on the lock failed:", {
+      code: error instanceof TuyaApiError ? error.code : null,
+      message: error instanceof TuyaApiError ? error.tuyaMessage : null,
+    });
+  }
+
+  // Safety: if the PIN we want to keep is not in the list, the ids do not
+  // line up, so refuse to delete by list rather than risk removing it.
+  if (
+    !listFailed &&
+    keepTuyaId &&
+    !pins.some((pin) => String(pin.id) === keepTuyaId)
+  ) {
+    console.warn("New PIN missing from lock list; not deleting by list.");
+    listFailed = true;
+  }
+
+  if (listFailed) {
+    return {
+      deleted: 0,
+      remainingIds: [] as string[],
+      pending: 0,
+      listFailed: true,
+      verifyFailed: true,
+    };
+  }
+
+  let deleted = 0;
+
+  for (const pin of pins) {
+    const phase = Number(pin.phase);
+
+    if (
+      String(pin.id) === keepTuyaId ||
+      PHASE_GONE.includes(phase) ||
+      phase === PHASE_PENDING_DELETE
+    ) {
+      continue;
+    }
+
+    try {
+      await deleteTuyaPin(ctx.deviceId, ctx.accessToken, String(pin.id));
+      deleted++;
+    } catch (error) {
+      console.error("Could not delete PIN from lock:", {
+        id: pin.id,
+        code: error instanceof TuyaApiError ? error.code : null,
+        message: error instanceof TuyaApiError ? error.tuyaMessage : null,
+      });
+    }
+  }
+
+  let remainingIds: string[] = [];
+  let pending = 0;
+  let verifyFailed = false;
+
+  try {
+    const after = await listTuyaPins(ctx.deviceId, ctx.accessToken);
+
+    pending = after.filter(
+      (pin) => Number(pin.phase) === PHASE_PENDING_DELETE,
+    ).length;
+
+    remainingIds = after
+      .filter(
+        (pin) =>
+          String(pin.id) !== keepTuyaId &&
+          !PHASE_GONE.includes(Number(pin.phase)) &&
+          Number(pin.phase) !== PHASE_PENDING_DELETE,
+      )
+      .map((pin) => String(pin.id));
+  } catch {
+    verifyFailed = true;
+  }
+
+  return { deleted, remainingIds, pending, listFailed: false, verifyFailed };
+}
+
+// Marks PINs revoked in the database, except ones the lock still holds.
+async function markRevokedExcept(ctx: PinContext, remainingIds: string[]) {
+  const { data: rows } = await ctx.supabase
+    .from("lock_passcodes")
+    .select("id, tuya_password_id")
+    .eq("lock_id", ctx.lock.id)
+    .eq("status", "active");
+
+  const ids = (rows ?? [])
+    .filter(
+      (row: any) =>
+        !row.tuya_password_id ||
+        !remainingIds.includes(String(row.tuya_password_id)),
+    )
+    .map((row: any) => row.id);
+
+  if (ids.length > 0) {
+    await markPinsRevoked(ctx, ids);
+  }
+}
+
+// Fallback used when the lock's PIN list can not be read: delete the PINs
+// this app knows about, one by one.
+async function revokeKnownOtherPins(ctx: PinContext, keepId: string) {
+  const { data: rows, error } = await ctx.supabase
+    .from("lock_passcodes")
+    .select("id, tuya_password_id")
+    .eq("lock_id", ctx.lock.id)
+    .eq("status", "active")
+    .neq("id", keepId);
+
+  if (error) {
+    console.error("Looking up older PINs failed:", {
+      code: error.code,
+      message: error.message,
+    });
+    return { replaced: 0, failed: 0, lookupFailed: true };
+  }
+
+  const removed: string[] = [];
+  let failed = 0;
+
+  for (const row of rows ?? []) {
+    try {
+      if (row.tuya_password_id) {
+        await deleteTuyaPin(ctx.deviceId, ctx.accessToken, row.tuya_password_id);
+      }
+      removed.push(row.id);
+    } catch (deleteError) {
+      failed++;
+      console.error("Could not delete older PIN from lock:", {
+        code: deleteError instanceof TuyaApiError ? deleteError.code : null,
+        message:
+          deleteError instanceof TuyaApiError ? deleteError.tuyaMessage : null,
+      });
+    }
+  }
+
+  if (removed.length > 0) {
+    await markPinsRevoked(ctx, removed);
+  }
+
+  return { replaced: removed.length, failed, pending: 0, lookupFailed: false };
+}
+
+// Deletes every other PIN from the lock so only the new one still works.
+async function revokeOtherPins(
+  ctx: PinContext,
+  keepId: string,
+  keepTuyaId: string,
+) {
+  const purge = await purgeLockPins(ctx, keepTuyaId);
+
+  if (purge.listFailed) {
+    return await revokeKnownOtherPins(ctx, keepId);
+  }
+
+  const { data: rows } = await ctx.supabase
+    .from("lock_passcodes")
+    .select("id, tuya_password_id")
+    .eq("lock_id", ctx.lock.id)
+    .eq("status", "active")
+    .neq("id", keepId);
+
+  const ids = (rows ?? [])
+    .filter(
+      (row: any) =>
+        !row.tuya_password_id ||
+        !purge.remainingIds.includes(String(row.tuya_password_id)),
+    )
+    .map((row: any) => row.id);
+
+  if (ids.length > 0) {
+    await markPinsRevoked(ctx, ids);
+  }
+
+  return {
+    replaced: purge.deleted,
+    failed: purge.remainingIds.length,
+    pending: purge.pending,
+    lookupFailed: false,
+  };
+}
+
 async function handlePinAction(ctx: PinContext): Promise<Response> {
   try {
     const { action, body } = ctx;
@@ -834,7 +1054,19 @@ async function handlePinAction(ctx: PinContext): Promise<Response> {
         window,
       );
 
-      return jsonResponse({ success: true, action, deviceId: ctx.deviceId, ...created });
+      // Create the new PIN first so access is never lost, then remove the rest.
+      const cleanup =
+        body.replaceOthers === true
+          ? await revokeOtherPins(ctx, created.passcodeId, created.tuyaPasswordId)
+          : { replaced: 0, failed: 0, pending: 0, lookupFailed: false };
+
+      return jsonResponse({
+        success: true,
+        action,
+        deviceId: ctx.deviceId,
+        ...created,
+        ...cleanup,
+      });
     }
 
     if (action === "pin_modify") {
@@ -925,25 +1157,473 @@ async function handlePinAction(ctx: PinContext): Promise<Response> {
         window,
       );
 
-      if (row.tuya_password_id) {
-        await deleteTuyaPin(ctx.deviceId, ctx.accessToken, row.tuya_password_id);
-      }
+      const cleanup = await revokeOtherPins(
+        ctx,
+        created.passcodeId,
+        created.tuyaPasswordId,
+      );
 
-      await markPinsRevoked(ctx, [row.id]);
-
-      return jsonResponse({ success: true, action, deviceId: ctx.deviceId, ...created });
+      return jsonResponse({
+        success: true,
+        action,
+        deviceId: ctx.deviceId,
+        ...created,
+        ...cleanup,
+      });
     }
 
     if (action === "pin_reset_all") {
-      await clearTuyaPins(ctx.deviceId, ctx.accessToken);
-      await markPinsRevoked(ctx, null);
+      let clearError: unknown = null;
+
+      try {
+        await clearTuyaPins(ctx.deviceId, ctx.accessToken);
+      } catch (error) {
+        clearError = error;
+      }
+
+      // "Clear all" is not always reliable, so list what is really on the
+      // lock, delete every remaining PIN one by one, then check again.
+      const purge = await purgeLockPins(ctx, null);
+
+      if (!purge.listFailed) {
+        await markRevokedExcept(ctx, purge.remainingIds);
+
+        return jsonResponse({
+          success: true,
+          action,
+          deviceId: ctx.deviceId,
+          deleted: purge.deleted,
+          remaining: purge.remainingIds.length,
+          pending: purge.pending,
+          verified: !purge.verifyFailed,
+        });
+      }
+
+      if (!clearError) {
+        await markPinsRevoked(ctx, null);
+
+        return jsonResponse({
+          success: true,
+          action,
+          deviceId: ctx.deviceId,
+          deleted: 0,
+          remaining: 0,
+          pending: 0,
+          verified: false,
+        });
+      }
+
+      // Both the list and clear-all failed: delete each PIN the app knows.
+      console.warn("Clear-all and list failed; deleting known PINs one by one.");
+
+      const { data: rows } = await ctx.supabase
+        .from("lock_passcodes")
+        .select("id, tuya_password_id")
+        .eq("lock_id", ctx.lock.id)
+        .eq("status", "active")
+        .not("tuya_password_id", "is", null);
+
+      const removed: string[] = [];
+      let failedCount = 0;
+
+      for (const row of rows ?? []) {
+        try {
+          await deleteTuyaPin(ctx.deviceId, ctx.accessToken, row.tuya_password_id);
+          removed.push(row.id);
+        } catch {
+          failedCount++;
+        }
+      }
+
+      if (removed.length > 0) {
+        await markPinsRevoked(ctx, removed);
+      }
+
+      if (removed.length === 0 || failedCount > 0) {
+        throw clearError;
+      }
+
+      return jsonResponse({
+        success: true,
+        action,
+        deviceId: ctx.deviceId,
+        deleted: removed.length,
+        remaining: 0,
+        pending: 0,
+        verified: false,
+      });
+    }
+
+    return jsonResponse({ error: "Unsupported action." }, 400);
+  } catch (error) {
+    if (error instanceof PinSaveError) {
+      return jsonResponse({ error: error.message }, 500);
+    }
+
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// NFC card and fingerprint enrollment (Tuya "unlocking method" APIs)
+//
+// Flow: create a Tuya device user -> put the lock into enrollment mode for
+// that user -> the person taps the card / scans the finger ON THE LOCK ->
+// the app polls credential_check, which saves the record only after Tuya
+// reports the new credential on the lock.
+// ---------------------------------------------------------------------------
+
+const CREDENTIAL_ACTIONS = [
+  "credential_start",
+  "credential_check",
+  "credential_cancel",
+  "credential_revoke",
+];
+
+const CREDENTIAL_TYPES: Record<
+  string,
+  { table: string; nameColumn: string; defaultName: string }
+> = {
+  card: {
+    table: "nfc_cards",
+    nameColumn: "card_name",
+    defaultName: "NFC card",
+  },
+  fingerprint: {
+    table: "fingerprints",
+    nameColumn: "fingerprint_name",
+    defaultName: "Fingerprint",
+  },
+};
+
+const TUYA_USER_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+class CredentialSaveError extends Error {}
+
+function lockUserPath(deviceId: string, tuyaUserId: string): string {
+  // user_type 2 = not a home user (what Tuya specifies for Wi-Fi locks).
+  return `/v1.0/devices/${encodeDeviceId(deviceId)}/door-lock/user-types/2/users/${encodeURIComponent(tuyaUserId)}`;
+}
+
+async function deleteTuyaUser(
+  deviceId: string,
+  accessToken: string,
+  tuyaUserId: string,
+) {
+  try {
+    await tuyaRequest(
+      "DELETE",
+      `/v1.0/devices/${encodeDeviceId(deviceId)}/users/${encodeURIComponent(tuyaUserId)}`,
+      accessToken,
+    );
+  } catch (error) {
+    console.warn("Could not delete Tuya lock user:", {
+      code: error instanceof TuyaApiError ? error.code : null,
+      message: error instanceof TuyaApiError ? error.tuyaMessage : null,
+    });
+  }
+}
+
+async function deleteTuyaKey(
+  deviceId: string,
+  accessToken: string,
+  tuyaUserId: string,
+  unlockType: string,
+  unlockNo: number,
+) {
+  await tuyaRequest(
+    "DELETE",
+    `${lockUserPath(deviceId, tuyaUserId)}/unlock-types/${unlockType}/keys/${unlockNo}`,
+    accessToken,
+  );
+}
+
+async function handleCredentialAction(ctx: PinContext): Promise<Response> {
+  try {
+    const { action, body } = ctx;
+
+    const type = typeof body.type === "string" ? body.type : "";
+    const config = CREDENTIAL_TYPES[type];
+
+    if (!config && action !== "credential_revoke") {
+      return jsonResponse({ error: "Unsupported credential type." }, 400);
+    }
+
+    if (action === "credential_start") {
+      const name = cleanLabel(body.name, config.defaultName);
+
+      // Tuya rejects duplicate user names on one device, so make each unique.
+      const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 4);
+      const nickName = `${name.slice(0, 13)}-${suffix}`;
+
+      const created = await tuyaRequest(
+        "POST",
+        `/v1.0/devices/${encodeDeviceId(ctx.deviceId)}/user`,
+        ctx.accessToken,
+        { nick_name: nickName, sex: 1 },
+      );
+
+      // Tuya's reply shape varies by lock type, so accept the common forms.
+      const result = created.result;
+      const rawUserId =
+        typeof result === "string" || typeof result === "number"
+          ? result
+          : result?.user_id ?? result?.userId ?? result?.id;
+
+      const tuyaUserId = String(rawUserId ?? "");
+
+      if (!TUYA_USER_ID_PATTERN.test(tuyaUserId)) {
+        console.error("Unexpected create-user response:", JSON.stringify(result));
+        throw new Error(
+          `Tuya did not return a lock user ID (reply: ${JSON.stringify(result)?.slice(0, 150)}).`,
+        );
+      }
+
+      const enterEnrollment = () =>
+        tuyaRequest(
+          "PUT",
+          `/v1.0/devices/${encodeDeviceId(ctx.deviceId)}/door-lock/actions/entry`,
+          ctx.accessToken,
+          {
+            user_id: tuyaUserId,
+            user_type: 2,
+            unlock_type: type,
+          },
+        );
+
+      try {
+        try {
+          await enterEnrollment();
+        } catch (error) {
+          // 2328 = an earlier enrollment is still pending on the lock.
+          // Cancel it, give the lock a moment, then retry once.
+          if (
+            error instanceof TuyaApiError &&
+            numericTuyaCode(error.code) === 2328
+          ) {
+            for (const staleType of ["card", "fingerprint"]) {
+              try {
+                await tuyaRequest(
+                  "PUT",
+                  `/v1.0/devices/${encodeDeviceId(ctx.deviceId)}/door-lock/unlock-types/${staleType}/actions/cancel`,
+                  ctx.accessToken,
+                  {},
+                );
+              } catch (cancelError) {
+                console.warn("Cancel stale enrollment failed:", {
+                  type: staleType,
+                  code:
+                    cancelError instanceof TuyaApiError
+                      ? cancelError.code
+                      : null,
+                });
+              }
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            await enterEnrollment();
+          } else {
+            throw error;
+          }
+        }
+      } catch (error) {
+        await deleteTuyaUser(ctx.deviceId, ctx.accessToken, tuyaUserId);
+        throw error;
+      }
+
+      return jsonResponse({
+        success: true,
+        action,
+        deviceId: ctx.deviceId,
+        tuyaUserId,
+      });
+    }
+
+    if (action === "credential_check") {
+      const tuyaUserId =
+        typeof body.tuyaUserId === "string" ? body.tuyaUserId : "";
+
+      if (!TUYA_USER_ID_PATTERN.test(tuyaUserId)) {
+        return jsonResponse({ error: "Invalid enrollment ID." }, 400);
+      }
+
+      // Already saved by an earlier check.
+      const { data: existing } = await ctx.supabase
+        .from(config.table)
+        .select("id")
+        .eq("lock_id", ctx.lock.id)
+        .eq("tuya_user_id", tuyaUserId)
+        .maybeSingle();
+
+      if (existing) {
+        return jsonResponse({
+          success: true,
+          action,
+          enrolled: true,
+          credentialId: existing.id,
+        });
+      }
+
+      const keys = await tuyaRequest(
+        "GET",
+        `${lockUserPath(ctx.deviceId, tuyaUserId)}/assigned-keys?unlock_type=${type}`,
+        ctx.accessToken,
+      );
+
+      const list: any[] = Array.isArray(keys.result?.unlock_keys)
+        ? keys.result.unlock_keys
+        : [];
+
+      const key =
+        list.find((item) => item?.unlock_type === type) ?? list[0];
+
+      if (!key || key.unlock_no === undefined || key.unlock_no === null) {
+        return jsonResponse({ success: true, action, enrolled: false });
+      }
+
+      const unlockNo = Number(key.unlock_no);
+      const name = cleanLabel(body.name, config.defaultName);
+      const guestId =
+        typeof body.guestId === "string" && UUID_PATTERN.test(body.guestId)
+          ? body.guestId
+          : null;
+
+      const { data: saved, error } = await ctx.supabase
+        .from(config.table)
+        .insert({
+          property_id: ctx.lock.property_id,
+          unit_id: ctx.lock.unit_id ?? null,
+          lock_id: ctx.lock.id,
+          guest_id: guestId,
+          [config.nameColumn]: name,
+          status: "active",
+          registered_at: new Date().toISOString(),
+          tuya_user_id: tuyaUserId,
+          tuya_unlock_no: unlockNo,
+        })
+        .select("id")
+        .single();
+
+      if (error) {
+        console.error("Saving credential failed:", {
+          code: error.code,
+          message: error.message,
+        });
+
+        // Do not leave a working credential the app does not know about.
+        try {
+          await deleteTuyaKey(
+            ctx.deviceId,
+            ctx.accessToken,
+            tuyaUserId,
+            type,
+            unlockNo,
+          );
+        } catch (cleanupError) {
+          console.error("Could not remove unsaved credential:", cleanupError);
+        }
+        await deleteTuyaUser(ctx.deviceId, ctx.accessToken, tuyaUserId);
+
+        throw new CredentialSaveError(
+          `It was enrolled but could not be saved, so it was removed from the lock (${error.message}).`,
+        );
+      }
+
+      return jsonResponse({
+        success: true,
+        action,
+        enrolled: true,
+        credentialId: saved.id,
+      });
+    }
+
+    if (action === "credential_cancel") {
+      const tuyaUserId =
+        typeof body.tuyaUserId === "string" ? body.tuyaUserId : "";
+
+      if (!TUYA_USER_ID_PATTERN.test(tuyaUserId)) {
+        return jsonResponse({ error: "Invalid enrollment ID." }, 400);
+      }
+
+      try {
+        await tuyaRequest(
+          "PUT",
+          `/v1.0/devices/${encodeDeviceId(ctx.deviceId)}/door-lock/unlock-types/${type}/actions/cancel`,
+          ctx.accessToken,
+          {},
+        );
+      } catch (error) {
+        console.warn("Cancel enrollment failed:", {
+          code: error instanceof TuyaApiError ? error.code : null,
+          message: error instanceof TuyaApiError ? error.tuyaMessage : null,
+        });
+      }
+
+      await deleteTuyaUser(ctx.deviceId, ctx.accessToken, tuyaUserId);
+
+      return jsonResponse({ success: true, action, deviceId: ctx.deviceId });
+    }
+
+    if (action === "credential_revoke") {
+      const credentialType = CREDENTIAL_TYPES[type];
+
+      if (!credentialType) {
+        return jsonResponse({ error: "Unsupported credential type." }, 400);
+      }
+
+      const credentialId = body.credentialId;
+
+      if (typeof credentialId !== "string" || !UUID_PATTERN.test(credentialId)) {
+        return jsonResponse({ error: "Invalid credential ID." }, 400);
+      }
+
+      const { data: row, error: loadError } = await ctx.supabase
+        .from(credentialType.table)
+        .select("id, status, tuya_user_id, tuya_unlock_no")
+        .eq("id", credentialId)
+        .eq("lock_id", ctx.lock.id)
+        .maybeSingle();
+
+      if (loadError) {
+        return jsonResponse({ error: "Could not load the record." }, 500);
+      }
+
+      if (!row) {
+        return jsonResponse({ error: "Record not found for this lock." }, 404);
+      }
+
+      if (row.status === "revoked") {
+        return jsonResponse({ error: "Already revoked." }, 400);
+      }
+
+      if (row.tuya_user_id && row.tuya_unlock_no !== null) {
+        await deleteTuyaKey(
+          ctx.deviceId,
+          ctx.accessToken,
+          row.tuya_user_id,
+          type,
+          Number(row.tuya_unlock_no),
+        );
+        await deleteTuyaUser(ctx.deviceId, ctx.accessToken, row.tuya_user_id);
+      }
+
+      const { error: updateError } = await ctx.supabase
+        .from(credentialType.table)
+        .update({ status: "revoked" })
+        .eq("id", row.id);
+
+      if (updateError) {
+        throw new CredentialSaveError(
+          `It was removed from the lock but the record could not be updated (${updateError.message}).`,
+        );
+      }
 
       return jsonResponse({ success: true, action, deviceId: ctx.deviceId });
     }
 
     return jsonResponse({ error: "Unsupported action." }, 400);
   } catch (error) {
-    if (error instanceof PinSaveError) {
+    if (error instanceof CredentialSaveError) {
       return jsonResponse({ error: error.message }, 500);
     }
 
@@ -963,8 +1643,17 @@ function tuyaFailureResponse(error: unknown) {
     );
   }
 
+  // Non-Tuya failures (our own code, crypto, parsing). These messages never
+  // contain secrets, so return them to make problems diagnosable from the app.
+  const detail =
+    error instanceof Error && error.message
+      ? error.message.slice(0, 200)
+      : "Unknown error";
+
+  console.error("Non-Tuya failure detail:", detail);
+
   return jsonResponse(
-    { error: "Smart lock operation failed. Check function logs." },
+    { error: `Smart lock operation failed: ${detail}` },
     502,
   );
 }
@@ -1046,14 +1735,17 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "Invalid device ID." }, 400);
     }
 
-    if (!["status", "lock", "unlock", ...PIN_ACTIONS].includes(action)) {
+    if (
+      !["status", "lock", "unlock", ...PIN_ACTIONS, ...CREDENTIAL_ACTIONS]
+        .includes(action)
+    ) {
       return jsonResponse({ error: "Unsupported action." }, 400);
     }
 
     // Find the lock using the actual device_id column in your schema.
     const { data: locks, error: lockError } = await supabase
       .from("smart_locks")
-      .select("id, property_id, device_id")
+      .select("id, property_id, unit_id, device_id")
       .eq("device_id", deviceId);
 
     if (lockError) {
@@ -1145,6 +1837,17 @@ Deno.serve(async (req: Request) => {
     // Only use the device ID from the verified database record.
     const verifiedDeviceId = authorizedLock.device_id;
     const accessToken = await getTuyaAccessToken();
+
+    if (CREDENTIAL_ACTIONS.includes(action)) {
+      return await handleCredentialAction({
+        action,
+        body: requestBody,
+        supabase,
+        lock: authorizedLock,
+        deviceId: verifiedDeviceId,
+        accessToken,
+      });
+    }
 
     if (PIN_ACTIONS.includes(action)) {
       return await handlePinAction({
